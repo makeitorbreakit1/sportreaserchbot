@@ -5,21 +5,22 @@
  * Pipeline per game:
  *   standings → shrunken power rating (+ form) → minus injury penalty → + home-field edge (+ H2H nudge)
  *   → projected margin → Normal(margin, σ_sport) → win % and spread-cover %
+ *   → projected total points → Normal(total, σ_total) → over/under %
  *   → blended with de-vigged market probability → EV vs best available price.
  */
 
 // ───────────────────────── Sport configuration ─────────────────────────
 // Margin units: points (NBA/NFL), goals (NHL), runs (MLB). sd = std-dev of final margin.
 const SPORT_CFG = {
-  nba: { homeAdv: 2.6, sd: 12.0, shrinkK: 15, winPctToMargin: 30, formScale: 8, formCap: 3.0, h2hWeight: 0.08, h2hCap: 2.0,
+  nba: { homeAdv: 2.6, sd: 12.0, totalSd: 15.5, shrinkK: 15, winPctToMargin: 30, formScale: 8, formCap: 3.0, h2hWeight: 0.08, h2hCap: 2.0,
          injuryCap: 10, injuryDefault: 0.35, injuryPos: {} },
-  nfl: { homeAdv: 1.8, sd: 13.2, shrinkK: 6, winPctToMargin: 28, formScale: 6, formCap: 3.0, h2hWeight: 0.06, h2hCap: 1.5,
+  nfl: { homeAdv: 1.8, sd: 13.2, totalSd: 13.0, shrinkK: 6, winPctToMargin: 28, formScale: 6, formCap: 3.0, h2hWeight: 0.06, h2hCap: 1.5,
          injuryCap: 10, injuryDefault: 0.25,
          injuryPos: { QB: 6.5, WR: 1.0, RB: 0.9, TE: 0.7, T: 0.9, OT: 0.9, G: 0.6, OG: 0.6, C: 0.6, OL: 0.7, DE: 0.9, DT: 0.8,
                       DL: 0.8, LB: 0.7, CB: 0.8, S: 0.6, DB: 0.6, K: 0.3, P: 0.1 } },
-  nhl: { homeAdv: 0.18, sd: 2.35, shrinkK: 20, winPctToMargin: 4, formScale: 1.0, formCap: 0.3, h2hWeight: 0.05, h2hCap: 0.15,
+  nhl: { homeAdv: 0.18, sd: 2.35, totalSd: 1.6, shrinkK: 20, winPctToMargin: 4, formScale: 1.0, formCap: 0.3, h2hWeight: 0.05, h2hCap: 0.15,
          injuryCap: 1.0, injuryDefault: 0.08, injuryPos: { G: 0.45, C: 0.15, W: 0.1, LW: 0.1, RW: 0.1, D: 0.09 } },
-  mlb: { homeAdv: 0.25, sd: 4.4, shrinkK: 45, winPctToMargin: 8, formScale: 1.2, formCap: 0.5, h2hWeight: 0.04, h2hCap: 0.2,
+  mlb: { homeAdv: 0.25, sd: 4.4, totalSd: 3.2, shrinkK: 45, winPctToMargin: 8, formScale: 1.2, formCap: 0.5, h2hWeight: 0.04, h2hCap: 0.2,
          injuryCap: 1.2, injuryDefault: 0.08, injuryPos: { SP: 0.5, P: 0.12, RP: 0.05, C: 0.12 } },
 };
 
@@ -32,10 +33,8 @@ const modelWeight = () => {
 };
 
 // ───────────────────────── Manual Injury & Starter Overrides ─────────────────────────
-// Add manual overrides here when starting QBs or key players are ruled out and API feeds lag.
 const MANUAL_OVERRIDES = {
   'philadelphia eagles': { qbOut: true, penalty: 6.5 },
-  // 'team name': { qbOut: true, penalty: 5.0 }
 };
 
 // ───────────────────────── Name helpers ─────────────────────────
@@ -65,18 +64,17 @@ const decimalToAmerican = d => (d >= 2 ? Math.round((d - 1) * 100) : Math.round(
 const americanToImplied = a => 1 / americanToDecimal(a);
 const fmtAmerican = a => (a > 0 ? `+${a}` : `${a}`);
 const fmtLine = n => (n > 0 ? `+${n}` : `${n}`);
-/** Remove the bookmaker margin from a two-way market → fair probabilities that sum to 1. */
 function noVig(a1, a2) {
   const i1 = americanToImplied(a1), i2 = americanToImplied(a2), s = i1 + i2;
   return [i1 / s, i2 / s];
 }
-const expectedValue = (p, dec) => p * dec - 1; // per $1 staked
+const expectedValue = (p, dec) => p * dec - 1;
 function kellyStake(p, dec, fraction = 0.25, cap = 0.02) {
   const b = dec - 1;
   return clamp(((b * p - (1 - p)) / b) * fraction, 0, cap);
 }
 
-// Standard normal CDF (Abramowitz–Stegun 7.1.26 erf approximation, |err| < 1.5e-7)
+// Standard normal CDF
 function erf(x) {
   const s = Math.sign(x); x = Math.abs(x);
   const t = 1 / (1 + 0.3275911 * x);
@@ -93,10 +91,6 @@ function confidenceTier(ev, p) {
 }
 
 // ───────────────────────── Power rating ─────────────────────────
-/**
- * Rating = points-per-game margin vs. an average team, shrunk toward 0 by gp/(gp+K) so small samples
- * (early season) don't produce wild numbers, plus a capped recent-form adjustment (last 10 vs season win%).
- */
 function teamRating(sport, st) {
   const cfg = SPORT_CFG[sport];
   if (!st) return { rating: 0, base: 0, form: 0, gp: 0, known: false };
@@ -121,10 +115,6 @@ const STATUS_WEIGHTS = [
 ];
 const statusWeight = (s = '') => { for (const [re, w] of STATUS_WEIGHTS) if (re.test(s)) return w; return 0.25; };
 
-/**
- * impact_i = positionValue_i × P(missing_i). NBA stars are valued by usage proxy (PPG × 0.17 net-rating pts).
- * Total is passed through cap × (1 − e^(−x/cap)) so a long injury list has diminishing returns.
- */
 function injuryPenalty(sport, injuries = [], ppgByName = {}) {
   const cfg = SPORT_CFG[sport];
   const items = [];
@@ -154,7 +144,6 @@ function buildProfile(sport, teamName, ctx) {
   if (leaders.ppg) ppgByName[normName(leaders.ppg.name)] = leaders.ppg.value;
   const injuries = injuryPenalty(sport, injKey ? ctx.injuries.byTeam[injKey] : [], ppgByName);
 
-  // Check manual overrides for unmodeled or late-breaking injuries (e.g. starting QB out)
   let manualPenalty = 0;
   const normTeam = normName(teamName);
   for (const [key, val] of Object.entries(MANUAL_OVERRIDES)) {
@@ -169,7 +158,7 @@ function buildProfile(sport, teamName, ctx) {
 
 function makeBet({ type, gameId, side, team, line, label, pModel, pMkt, price }) {
   const w = modelWeight();
-  const p = w * pModel + (1 - w) * pMkt; // shrink toward the market to avoid phantom edges
+  const p = w * pModel + (1 - w) * pMkt;
   const ev = expectedValue(p, price.dec);
   return { type, gameId, side, team, line, label, pModel, pMkt, p, american: price.american, dec: price.dec,
            book: price.book, ev, kelly: kellyStake(p, price.dec), tier: confidenceTier(ev, p) };
@@ -180,37 +169,62 @@ function analyzeGame(sport, game, ctx, h2hMargin = null) {
   const home = buildProfile(sport, game.home, ctx);
   const away = buildProfile(sport, game.away, ctx);
   const h2hAdj = h2hMargin == null ? 0 : clamp(h2hMargin * cfg.h2hWeight, -cfg.h2hCap, cfg.h2hCap);
-  const projMargin = (home.strength + cfg.homeAdv + h2hAdj) - away.strength; // + = home wins by that much
+  const projMargin = (home.strength + cfg.homeAdv + h2hAdj) - away.strength;
   const pHomeModel = normCdf(projMargin / cfg.sd);
   const bets = [];
 
+  // 1. Moneyline Evaluation
   if (game.ml) {
     bets.push(makeBet({ type: 'ML', gameId: game.id, side: 'home', team: game.home, line: null, label: `${game.home} ML`,
       pModel: pHomeModel, pMkt: game.ml.fairHome, price: game.ml.home }));
     bets.push(makeBet({ type: 'ML', gameId: game.id, side: 'away', team: game.away, line: null, label: `${game.away} ML`,
       pModel: 1 - pHomeModel, pMkt: game.ml.fairAway, price: game.ml.away }));
   }
+
+  // 2. Point Spread Evaluation
   if (game.spread) {
     const s = game.spread;
-    const pHomeCover = normCdf((projMargin + s.point) / cfg.sd); // home covers if margin + spread > 0
+    const pHomeCover = normCdf((projMargin + s.point) / cfg.sd);
     bets.push(makeBet({ type: 'SPREAD', gameId: game.id, side: 'home', team: game.home, line: s.point,
       label: `${game.home} ${fmtLine(s.point)}`, pModel: pHomeCover, pMkt: s.fairHome, price: s.home }));
     bets.push(makeBet({ type: 'SPREAD', gameId: game.id, side: 'away', team: game.away, line: -s.point,
       label: `${game.away} ${fmtLine(-s.point)}`, pModel: 1 - pHomeCover, pMkt: s.fairAway, price: s.away }));
   }
+
+  // 3. Total Points (Over/Under) Evaluation
+  if (game.total && home.st && away.st && home.st.avgFor != null && away.st.avgFor != null) {
+    const t = game.total;
+    // Projected total is the sum of both teams' expected scoring output
+    const leagueAvgFor = ctx.standings?.league?.avgFor || (sport === 'nba' ? 115 : 22);
+    const homeExp = (home.st.avgFor + away.st.avgAgainst) / 2;
+    const awayExp = (away.st.avgFor + home.st.avgAgainst) / 2;
+    const projTotal = homeExp + awayExp;
+
+    const pOverModel = 1 - normCdf((t.point - projTotal) / cfg.totalSd);
+    const mktOverFair = t.over && t.under ? noVig(t.over.american, t.under.american)[0] : 0.5;
+
+    if (t.over) {
+      bets.push(makeBet({ type: 'TOTAL', gameId: game.id, side: 'over', team: 'Over', line: t.point,
+        label: `Over ${t.point}`, pModel: pOverModel, pMkt: mktOverFair, price: t.over }));
+    }
+    if (t.under) {
+      bets.push(makeBet({ type: 'TOTAL', gameId: game.id, side: 'under', team: 'Under', line: t.point,
+        label: `Under ${t.point}`, pModel: 1 - pOverModel, pMkt: 1 - mktOverFair, price: t.under }));
+    }
+  }
+
   const reliable = home.rating.known && away.rating.known;
   return { sport, game, home, away, projMargin, pHomeModel, h2hAdj, bets, reliable,
            pMktHome: game.ml?.fairHome ?? null, pHome: bets.find(b => b.type === 'ML' && b.side === 'home')?.p ?? pHomeModel };
 }
 
 // ───────────────────────── Player props (NBA) ─────────────────────────
-const PROP_CV = { points: 0.30, rebounds: 0.40, assists: 0.45 };          // coefficient of variation (game-to-game)
-const PROP_DEF_COEF = { points: 0.6, rebounds: 0.25, assists: 0.3 };      // sensitivity to opponent defense
-const PROP_USAGE_COEF = { points: 1, rebounds: 0.4, assists: 0.8 };       // sensitivity to teammate absences
+const PROP_CV = { points: 0.30, rebounds: 0.40, assists: 0.45 };
+const PROP_DEF_COEF = { points: 0.6, rebounds: 0.25, assists: 0.3 };
+const PROP_USAGE_COEF = { points: 1, rebounds: 0.4, assists: 0.8 };
 const STAT_ABBR = { points: 'PTS', rebounds: 'REB', assists: 'AST' };
 const MARKET_KEY = { points: 'player_points', rebounds: 'player_rebounds', assists: 'player_assists' };
 
-/** proj = seasonAvg × pace^0.6 × oppDefense × usage(teammate injuries) × blowout-minutes factor */
 function projectPlayerStat({ stat, avg, team, opp, league, projMargin, teammateInjRaw = 0 }) {
   const expTotal = (team.st.avgFor + opp.st.avgAgainst) / 2 + (opp.st.avgFor + team.st.avgAgainst) / 2;
   const pace = clamp(expTotal / (2 * league.avgFor), 0.9, 1.1);
@@ -236,11 +250,6 @@ function evaluateProp({ proj, sd, line, over, under }) {
            ev: pickOver ? evO : evU, american: price.american, dec: price.dec, book: price.book };
 }
 
-/**
- * Props for the (≤3) season leaders ESPN lists per team on the scoreboard.
- * `live` (optional) = real sportsbook lines { points:{normName:{point,over,under}}, ... }; otherwise the line is
- * ESTIMATED as the nearest half-point at/below the season average, which is how books typically anchor it.
- */
 function buildProps(analysis, ctx, live) {
   if (analysis.sport !== 'nba') return [];
   const league = ctx.standings?.league;
@@ -257,7 +266,7 @@ function buildProps(analysis, ctx, live) {
       const uid = `${normName(l.name)}:${stat}`;
       if (seen.has(uid)) continue; seen.add(uid);
       const own = injByName.get(normName(l.name));
-      if (own && own.weight >= 0.85) continue;                       // ruled out / doubtful → skip
+      if (own && own.weight >= 0.85) continue;
       const teammateRaw = Math.max(0, team.injuries.raw - (own ? own.impact : 0));
       const pr = projectPlayerStat({ stat, avg: l.value, team, opp, league, projMargin: side === 'home' ? analysis.projMargin : -analysis.projMargin, teammateInjRaw: teammateRaw });
       const liveLine = live?.[stat]?.[normName(l.name)];
@@ -272,13 +281,10 @@ function buildProps(analysis, ctx, live) {
 }
 
 // ───────────────────────── Best bets & parlay lineup ─────────────────────────
-/** Conservative mode: single, lower-variance (p ≥ 50%, price ≤ +130) bets with positive blended EV; 1 per game. */
 function pickBestBets(analyses, limit = 5) {
   const score = b => b.ev + 0.3 * (b.p - 0.5);
   const pool = analyses.filter(a => a.reliable).flatMap(a => a.bets)
     .filter(b => {
-      // Market discrepancy guard: filter out bets where model vs market divergence > 20%
-      // to prevent recommending picks where unmodeled news (like late injuries) distorts edge.
       if (Math.abs(b.pModel - b.pMkt) > 0.20) return false;
       return b.ev >= MIN_EV && b.p >= 0.5 && b.dec <= 2.3;
     })
@@ -288,7 +294,6 @@ function pickBestBets(analyses, limit = 5) {
   return out;
 }
 
-/** Same-game legs are only allowed as (team-side leg, same-team player OVER) with positive correlation ρ. */
 function legCorrelation(a, b) {
   if (a.gameId !== b.gameId) return { ok: true, rho: 0 };
   const [t, pr] = a.type === 'PROP' ? [b, a] : [a, b];
@@ -309,11 +314,10 @@ function evalCombo(legs) {
     if (used.has(i) || used.has(j)) return null;
     used.add(i); used.add(j);
     const pa = legs[i].p, pb = legs[j].p;
-    // P(A∩B) = pA·pB + ρ·√(pA qA pB qB)  (Bernoulli correlation), bounded by the Fréchet upper limit
     pAdj *= Math.min(pa * pb + rho * Math.sqrt(pa * (1 - pa) * pb * (1 - pb)), pa, pb);
   }
   legs.forEach((l, i) => { if (!used.has(i)) pAdj *= l.p; });
-  const pInd = legs.reduce((a, l) => a * l.p, 1);          // P1 × P2 × P3 …
+  const pInd = legs.reduce((a, l) => a * l.p, 1);
   const dec = legs.reduce((a, l) => a * l.dec, 1);
   return { legs, pInd, pAdj, dec, american: decimalToAmerican(dec), ev: pAdj * dec - 1 };
 }
@@ -323,7 +327,6 @@ function* combinations(arr, k, start = 0, acc = []) {
   for (let i = start; i < arr.length; i++) { acc.push(arr[i]); yield* combinations(arr, k, i + 1, acc); acc.pop(); }
 }
 
-/** High-risk mode: searches legs from a diverse candidate pool for the highest parlay EV that still pays well. */
 function buildLineup(analyses, propsByGame, legsN) {
   const cands = [];
   for (const a of analyses) {
@@ -331,14 +334,15 @@ function buildLineup(analyses, propsByGame, legsN) {
     for (const b of a.bets) {
       if (b.type === 'ML' && b.p >= 0.3 && b.p <= 0.6) cands.push(b);
       if (b.type === 'SPREAD' && b.p >= 0.46) cands.push(b);
+      if (b.type === 'TOTAL' && b.p >= 0.5) cands.push(b);
     }
     for (const pr of propsByGame[a.game.id] || []) if (pr.p >= 0.5 && !pr.questionable) cands.push(pr);
   }
   const top = (type, n) => cands.filter(c => c.type === type).sort((a, b) => b.ev - a.ev).slice(0, n);
-  const pool = [...top('PROP', 7), ...top('ML', 6), ...top('SPREAD', 5)];
+  const pool = [...top('PROP', 7), ...top('ML', 6), ...top('SPREAD', 5), ...top('TOTAL', 5)];
   if (pool.length < legsN) return null;
 
-  const minDec = Math.pow(1.75, legsN); // "high payout": rules out heavy-chalk parlays
+  const minDec = Math.pow(1.75, legsN);
   let best = null, bestAny = null;
   for (const combo of combinations(pool, legsN)) {
     const r = evalCombo(combo);
