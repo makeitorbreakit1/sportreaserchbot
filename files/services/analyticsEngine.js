@@ -364,31 +364,52 @@ function* combinations(arr, k, start = 0, acc = []) {
 }
 
 function buildDualParlays(analyses, propsByGame, legsN, mode = 'game') {
-  const cands = [];
+  const strongCands = [];
+  const demonCands = [];
+
   for (const a of analyses) {
     if (!a.reliable) continue;
     if (mode === 'game' || mode === 'both') {
       for (const b of a.bets) {
-        if (b.type === 'ML' && b.p >= 0.3 && b.p <= 0.6) cands.push(b);
-        if (b.type === 'SPREAD' && b.p >= 0.46) cands.push(b);
-        if (b.type === 'TOTAL' && b.p >= 0.5) cands.push(b);
+        if (b.type === 'ML' && b.p >= 0.3 && b.p <= 0.6) strongCands.push(b);
+        if (b.type === 'SPREAD' && b.p >= 0.46) strongCands.push(b);
+        if (b.type === 'TOTAL' && b.p >= 0.5) strongCands.push(b);
       }
     }
     if (mode === 'player' || mode === 'both') {
       for (const pr of propsByGame[a.game.id] || []) {
-        if (pr.p >= 0.35 && !pr.questionable) cands.push(pr);
+        if (pr.p >= 0.40 && !pr.questionable) {
+          // Standard prop candidate for Option 1
+          strongCands.push(pr);
+
+          // PURE "DEMON" ALT PROP FOR OPTION 2 ONLY (Pushed higher line, lower probability, massive payout multiplier)
+          const bump = pr.stat === 'points' ? 3.5 : 2.0;
+          const altLine = pr.line + bump;
+          const altP = 1 - normCdf((altLine - pr.proj) / pr.sd); // Harder to hit probability
+
+          if (altP >= 0.15 && altP <= 0.48) {
+            const altDec = Math.round((1 / (altP * 0.88)) * 100) / 100; // Scaled higher odds multiplier
+            demonCands.push({
+              ...pr,
+              line: altLine,
+              p: altP,
+              dec: altDec,
+              american: decimalToAmerican(altDec),
+              label: `${pr.player} Over ${altLine} ${STAT_ABBR[pr.stat]} (🔥 DEMON ALT)`
+            });
+          }
+        }
       }
     }
   }
 
-  if (cands.length < legsN) return { strong: null, risky: null };
+  if (strongCands.length < legsN) return { strong: null, risky: null };
 
-  // Sort candidates by probability/EV descending for Option 1
-  const sortedCands = [...cands].sort((a, b) => (b.ev * 2 + b.p) - (a.ev * 2 + a.p));
+  const sortedStrongCands = [...strongCands].sort((a, b) => (b.ev * 2 + b.p) - (a.ev * 2 + a.p));
 
-  // 1. Option 1 (Strong Parlay): Take the top best legs
+  // 1. Option 1 (Strong Parlay): Built strictly from standard baseline props
   let bestStrong = null;
-  for (const combo of combinations(sortedCands, legsN)) {
+  for (const combo of combinations(sortedStrongCands, legsN)) {
     const r = evalCombo(combo);
     if (!r) continue;
     const strongScore = r.ev * 2 + r.pAdj;
@@ -399,27 +420,24 @@ function buildDualParlays(analyses, propsByGame, legsN, mode = 'game') {
 
   if (!bestStrong) return { strong: null, risky: null };
 
-  // Exclude players used in Strong Parlay
-  const strongPlayers = new Set(bestStrong.legs.map(l => l.player));
-  const remainingCands = sortedCands.filter(c => !strongPlayers.has(c.player));
-
-  // 2. Option 2 (Risky / Lotto Parlay): MANDATE starting from the bottom-up or alternate indexing 
-  // so it targets different players and a completely separate multiplier bracket.
+  // 2. Option 2 (Risky / Lotto Parlay): Built EXCLUSIVELY from the 🔥 DEMON ALT high-risk lines
   let bestRisky = null;
-  const invertedPool = remainingCands.length >= legsN ? remainingCands.reverse() : [...cands].reverse();
+  const sortedDemonCands = [...demonCands].sort((a, b) => b.dec - a.dec);
 
-  for (const combo of combinations(invertedPool, legsN)) {
-    const r = evalCombo(combo);
-    if (!r) continue;
-    if (!bestRisky || r.dec > bestRisky.dec) {
-      bestRisky = r;
+  if (sortedDemonCands.length >= legsN) {
+    for (const combo of combinations(sortedDemonCands, legsN)) {
+      const r = evalCombo(combo);
+      if (!r) continue;
+      if (!bestRisky || r.dec > bestRisky.dec) {
+        bestRisky = r;
+      }
     }
   }
 
-  // Fallback: If inverted combination loop fails, force a completely offset slice
-  if (!bestRisky || bestRisky.dec === bestStrong.dec) {
-    const offsetSlice = sortedCands.slice(legsN, legsN * 2);
-    bestRisky = offsetSlice.length >= legsN ? evalCombo(offsetSlice) : bestStrong;
+  // Fallback if demon pool needs extra legs
+  if (!bestRisky) {
+    const fallbackPool = [...sortedStrongCands].reverse();
+    bestRisky = evalCombo(fallbackPool.slice(0, legsN));
   }
 
   return { strong: bestStrong, risky: bestRisky };
