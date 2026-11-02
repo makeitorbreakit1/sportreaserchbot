@@ -376,14 +376,14 @@ function buildDualParlays(analyses, propsByGame, legsN, mode = 'game') {
     }
     if (mode === 'player' || mode === 'both') {
       for (const pr of propsByGame[a.game.id] || []) {
-        if (pr.p >= 0.40 && !pr.questionable) cands.push(pr);
+        if (pr.p >= 0.35 && !pr.questionable) cands.push(pr);
       }
     }
   }
 
   if (cands.length < legsN) return { strong: null, risky: null };
 
-  // Sort all candidates by expected score/probability
+  // Sort candidates by probability/EV descending for Option 1
   const sortedCands = [...cands].sort((a, b) => (b.ev * 2 + b.p) - (a.ev * 2 + a.p));
 
   // 1. Option 1 (Strong Parlay): Take the top best legs
@@ -403,11 +403,12 @@ function buildDualParlays(analyses, propsByGame, legsN, mode = 'game') {
   const strongPlayers = new Set(bestStrong.legs.map(l => l.player));
   const remainingCands = sortedCands.filter(c => !strongPlayers.has(c.player));
 
-  // 2. Option 2 (Risky / Lotto Parlay): Build from remaining distinct player legs
+  // 2. Option 2 (Risky / Lotto Parlay): MANDATE starting from the bottom-up or alternate indexing 
+  // so it targets different players and a completely separate multiplier bracket.
   let bestRisky = null;
-  const poolForRisky = remainingCands.length >= legsN ? remainingCands : sortedCands;
+  const invertedPool = remainingCands.length >= legsN ? remainingCands.reverse() : [...cands].reverse();
 
-  for (const combo of combinations(poolForRisky, legsN)) {
+  for (const combo of combinations(invertedPool, legsN)) {
     const r = evalCombo(combo);
     if (!r) continue;
     if (!bestRisky || r.dec > bestRisky.dec) {
@@ -415,9 +416,9 @@ function buildDualParlays(analyses, propsByGame, legsN, mode = 'game') {
     }
   }
 
-  // Guaranteed Offset Fallback: If pool collapse caused matching tickets, use an offset slice
+  // Fallback: If inverted combination loop fails, force a completely offset slice
   if (!bestRisky || bestRisky.dec === bestStrong.dec) {
-    const offsetSlice = sortedCands.slice(1, legsN + 1);
+    const offsetSlice = sortedCands.slice(legsN, legsN * 2);
     bestRisky = offsetSlice.length >= legsN ? evalCombo(offsetSlice) : bestStrong;
   }
 
