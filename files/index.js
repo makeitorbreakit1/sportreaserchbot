@@ -22,9 +22,19 @@ for (const file of fs.readdirSync(path.join(__dirname, 'commands')).filter(f => 
 async function registerCommands() {
   const rest = new REST({ version: '10' }).setToken(DISCORD_TOKEN);
   const body = [...client.commands.values()].map(c => c.data.toJSON());
-  const route = GUILD_ID ? Routes.applicationGuildCommands(CLIENT_ID, GUILD_ID) : Routes.applicationCommands(CLIENT_ID);
-  await rest.put(route, { body });
-  console.log(`Registered ${body.length} slash commands (${GUILD_ID ? 'guild ' + GUILD_ID : 'global'}).`);
+
+  // 1. Wipe stale/cached Global Commands to eliminate duplicates
+  await rest.put(Routes.applicationCommands(CLIENT_ID), { body: [] });
+  console.log('Cleared cached global slash commands.');
+
+  // 2. Register active commands to Guild (if specified) or Global
+  if (GUILD_ID) {
+    await rest.put(Routes.applicationGuildCommands(CLIENT_ID, GUILD_ID), { body });
+    console.log(`Registered ${body.length} slash commands to guild ${GUILD_ID}.`);
+  } else {
+    await rest.put(Routes.applicationCommands(CLIENT_ID), { body });
+    console.log(`Registered ${body.length} global slash commands.`);
+  }
 }
 
 client.once(Events.ClientReady, c => {
