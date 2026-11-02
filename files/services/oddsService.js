@@ -12,7 +12,6 @@
  */
 const { guardedFetch, cached, syncProviderUsage, TTL } = require('../cache/cacheManager');
 const { americanToDecimal, noVig, normName, findKey, nameMatchScore, MARKET_KEY } = require('./analyticsEngine');
-const axios = require('axios');
 
 const SPORTS = {
   nba: { label: 'NBA', oddsKey: 'basketball_nba', espn: 'basketball/nba', windowHours: 36, bdlId: 'nba' },
@@ -21,7 +20,6 @@ const SPORTS = {
   mlb: { label: 'MLB', oddsKey: 'baseball_mlb', espn: 'baseball/mlb', windowHours: 36 },
 };
 
-// FIXED: Cleaned up invalid assignment syntax here
 const SPORT_CHOICES = Object.entries(SPORTS).map(([value, c]) => ({ name: c.label, value }));
 
 const ODDS_BASE = 'https://api.the-odds-api.com/v4';
@@ -121,11 +119,16 @@ async function getBalldontlieTeamStats(season, teamIds = []) {
   return cached(`bdl:stats:${season}:${teamIds.join(',')}`, TTL.STANDINGS, async () => {
     if (!process.env.BALLDONTLIE_API_KEY) return null;
     try {
-      const response = await axios.get(`${BALLDONTLIE_BASE}/season_averages`, {
-        headers: { 'Authorization': process.env.BALLDONTLIE_API_KEY },
-        params: { season: season, team_ids: teamIds }
+      const params = new URLSearchParams({ season: season });
+      if (teamIds && teamIds.length) {
+        teamIds.forEach(id => params.append('team_ids', id));
+      }
+      const response = await fetch(`${BALLDONTLIE_BASE}/season_averages?${params.toString()}`, {
+        headers: { 'Authorization': process.env.BALLDONTLIE_API_KEY }
       });
-      return response.data.data;
+      if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
+      const data = await response.json();
+      return data.data;
     } catch (error) {
       console.error('Balldontlie API fetch error:', error.message);
       return null;
