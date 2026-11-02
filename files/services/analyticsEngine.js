@@ -1,6 +1,6 @@
 'use strict';
 /**
- * analyticsEngine.js — pure quantitative functions with empirical L10 hit-rate grading and strict risk-separation.
+ * analyticsEngine.js — pure quantitative functions with empirical L10 hit-rate grading and true risk-separation.
  */
 
 const SPORT_CFG = {
@@ -383,11 +383,12 @@ function buildDualParlays(analyses, propsByGame, legsN, mode = 'game') {
 
   if (cands.length < legsN) return { strong: null, risky: null };
 
-  let bestStrong = null;
-  let bestRisky = null;
+  // Sort all candidates by expected score/probability
+  const sortedCands = [...cands].sort((a, b) => (b.ev * 2 + b.p) - (a.ev * 2 + a.p));
 
-  // 1. Build Option 1 (Strong Parlay): Maximizes stability and probability
-  for (const combo of combinations(cands, legsN)) {
+  // 1. Option 1 (Strong Parlay): Take the top best legs
+  let bestStrong = null;
+  for (const combo of combinations(sortedCands, legsN)) {
     const r = evalCombo(combo);
     if (!r) continue;
     const strongScore = r.ev * 2 + r.pAdj;
@@ -398,17 +399,15 @@ function buildDualParlays(analyses, propsByGame, legsN, mode = 'game') {
 
   if (!bestStrong) return { strong: null, risky: null };
 
-  // Strict Exclusion Filter: Gather identifiers for legs used in Strong Parlay
-  const strongLegIds = new Set(bestStrong.legs.map(l => `${l.gameId || l.player}-${l.label}`));
+  // Exclude players used in Strong Parlay
+  const strongPlayers = new Set(bestStrong.legs.map(l => l.player));
+  const remainingCands = sortedCands.filter(c => !strongPlayers.has(c.player));
 
-  // 2. Build Option 2 (Risky / Lotto Parlay): EXCLUDE all legs used in the Strong parlay
-  const remainingCands = cands.filter(c => !strongLegIds.has(`${c.gameId || c.player}-${c.label}`));
-  const poolForRisky = remainingCands.length >= legsN ? remainingCands : cands;
+  // 2. Option 2 (Risky / Lotto Parlay): Build from remaining distinct player legs
+  let bestRisky = null;
+  const poolForRisky = remainingCands.length >= legsN ? remainingCands : sortedCands;
 
-  // Sort pool for Risky by HIGHEST decimal odds to ensure a true high-multiplier lotto ticket
-  const sortedForRisky = [...poolForRisky].sort((a, b) => b.dec - a.dec || a.p - b.p);
-
-  for (const combo of combinations(sortedForRisky, legsN)) {
+  for (const combo of combinations(poolForRisky, legsN)) {
     const r = evalCombo(combo);
     if (!r) continue;
     if (!bestRisky || r.dec > bestRisky.dec) {
@@ -416,14 +415,13 @@ function buildDualParlays(analyses, propsByGame, legsN, mode = 'game') {
     }
   }
 
-  // Absolute fallback: if combination pool was restricted, force sort remaining pool by top odds
-  if (!bestRisky || (bestStrong && bestRisky.dec === bestStrong.dec)) {
-    if (sortedForRisky.length >= legsN) {
-      bestRisky = evalCombo(sortedForRisky.slice(0, legsN));
-    }
+  // Guaranteed Offset Fallback: If pool collapse caused matching tickets, use an offset slice
+  if (!bestRisky || bestRisky.dec === bestStrong.dec) {
+    const offsetSlice = sortedCands.slice(1, legsN + 1);
+    bestRisky = offsetSlice.length >= legsN ? evalCombo(offsetSlice) : bestStrong;
   }
 
-  return { strong: bestStrong, risky: bestRisky || bestStrong };
+  return { strong: bestStrong, risky: bestRisky };
 }
 
 module.exports = {
