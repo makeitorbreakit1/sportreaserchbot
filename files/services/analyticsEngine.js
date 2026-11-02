@@ -86,7 +86,6 @@ function teamRating(sport, st, apiSportsDef = null, teamName = '') {
     ? st.avgFor - st.avgAgainst 
     : st ? (st.winPct - 0.5) * cfg.winPctToMargin : 0;
 
-  // Integrate API-Sports defensive ratings factor for NBA
   if (sport === 'nba' && apiSportsDef && teamName) {
     const normT = normName(teamName);
     const defAllowed = apiSportsDef[normT];
@@ -207,13 +206,15 @@ const STAT_ABBR = { points: 'PTS', rebounds: 'REB', assists: 'AST' };
 const MARKET_KEY = { points: 'player_points', rebounds: 'player_rebounds', assists: 'player_assists' };
 
 function projectPlayerStat({ stat, avg, team, opp, league, projMargin, teammateInjRaw = 0 }) {
+  // Blend season baseline with a slight regression anchor to keep projections grounded
+  const blendedAvg = avg * 0.85 + (league.avgFor * 0.4) * 0.15;
   const expTotal = (team.st.avgFor + opp.st.avgAgainst) / 2 + (opp.st.avgFor + team.st.avgAgainst) / 2;
   const pace = clamp(expTotal / (2 * league.avgFor), 0.9, 1.1);
   const paceAdj = Math.pow(pace, 0.6);
   const defAdj = 1 + (opp.st.avgAgainst / league.avgAgainst - 1) * PROP_DEF_COEF[stat];
   const usage = 1 + clamp(teammateInjRaw * 0.02, 0, 0.10) * PROP_USAGE_COEF[stat];
   const blowout = 1 - clamp((Math.abs(projMargin) - 8) / 100, 0, 0.08);
-  const proj = avg * paceAdj * defAdj * usage * blowout;
+  const proj = blendedAvg * paceAdj * defAdj * usage * blowout;
   return { proj, sd: Math.max(1.2, proj * PROP_CV[stat]), factors: { pace: paceAdj, def: defAdj, usage, blowout } };
 }
 
@@ -244,14 +245,17 @@ function buildProps(analysis, ctx, live) {
     for (const [key, stat] of [['ppg', 'points'], ['rpg', 'rebounds'], ['apg', 'assists']]) {
       const l = team.leaders[key];
       if (!l || !(l.value > 0)) continue;
+
       const uid = `${normName(l.name)}:${stat}`;
       if (seen.has(uid)) continue; seen.add(uid);
       const own = injByName.get(normName(l.name));
       if (own && own.weight >= 0.85) continue;
       const teammateRaw = Math.max(0, team.injuries.raw - (own ? own.impact : 0));
       const pr = projectPlayerStat({ stat, avg: l.value, team, opp, league, projMargin: side === 'home' ? analysis.projMargin : -analysis.projMargin, teammateInjRaw: teammateRaw });
+      
       const liveLine = live?.[stat]?.[normName(l.name)];
       const line = liveLine ? liveLine.point : Math.floor(l.value) + 0.5;
+
       const ev = evaluateProp({ proj: pr.proj, sd: pr.sd, line, over: liveLine?.over, under: liveLine?.under });
       out.push({ type: 'PROP', gameId: analysis.game.id, team: team.name, player: l.name, stat, line, estimated: !liveLine,
         avg: l.value, proj: pr.proj, sd: pr.sd, factors: pr.factors, questionable: !!own, ...ev,
@@ -339,9 +343,16 @@ function buildDualParlays(analyses, propsByGame, legsN, mode = 'game') {
       bestStrong = r;
     }
 
-    if (!bestRisky || r.dec > bestRisky.dec) {
-      bestRisky = r;
+    const avgLegOdds = r.dec / legsN;
+    if (avgLegOdds >= 1.90) { 
+      if (!bestRisky || r.dec > bestRisky.dec) {
+        bestRisky = r;
+      }
     }
+  }
+
+  if (!bestRisky && bestStrong) {
+    bestRisky = bestStrong;
   }
 
   return { strong: bestStrong, risky: bestRisky };
