@@ -23,7 +23,10 @@ module.exports = {
       }
       const ctx = await getAnalysisContext(sport);
       const analyses = slate.games.map(g => analyzeGame(sport, g, ctx));
-      const bets = pickBestBets(analyses, 5);
+      
+      // Filter out any bets failing the market discrepancy / injury sanity guard
+      const bets = pickBestBets(analyses, 5).filter(b => Math.abs(b.pModel - b.pMkt) <= 0.20);
+
       const meta = { stale: slate.stale || ctx.stale, blocked: slate.blocked || ctx.blocked, missing: ctx.missing };
       await interaction.editReply({ embeds: [bestBetsEmbed(SPORTS[sport].label, bets, slate.games.length, meta)] });
       startCooldown(interaction.user.id);
