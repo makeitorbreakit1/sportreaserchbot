@@ -31,6 +31,13 @@ const modelWeight = () => {
   return Number.isFinite(v) ? clamp(v, 0, 1) : 0.35;
 };
 
+// ───────────────────────── Manual Injury & Starter Overrides ─────────────────────────
+// Add manual overrides here when starting QBs or key players are ruled out and API feeds lag.
+const MANUAL_OVERRIDES = {
+  'philadelphia eagles': { qbOut: true, penalty: 6.5 },
+  // 'team name': { qbOut: true, penalty: 5.0 }
+};
+
 // ───────────────────────── Name helpers ─────────────────────────
 function normName(s = '') {
   return String(s).toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '')
@@ -146,8 +153,18 @@ function buildProfile(sport, teamName, ctx) {
   const ppgByName = {};
   if (leaders.ppg) ppgByName[normName(leaders.ppg.name)] = leaders.ppg.value;
   const injuries = injuryPenalty(sport, injKey ? ctx.injuries.byTeam[injKey] : [], ppgByName);
+
+  // Check manual overrides for unmodeled or late-breaking injuries (e.g. starting QB out)
+  let manualPenalty = 0;
+  const normTeam = normName(teamName);
+  for (const [key, val] of Object.entries(MANUAL_OVERRIDES)) {
+    if (normTeam.includes(key) && val.qbOut) {
+      manualPenalty += val.penalty;
+    }
+  }
+
   return { name: teamName, st, rating, injuries, leaders, weather: sb?.weather || null,
-           strength: rating.rating - injuries.penalty };
+           strength: rating.rating - (injuries.penalty + manualPenalty) };
 }
 
 function makeBet({ type, gameId, side, team, line, label, pModel, pMkt, price }) {
@@ -259,7 +276,12 @@ function buildProps(analysis, ctx, live) {
 function pickBestBets(analyses, limit = 5) {
   const score = b => b.ev + 0.3 * (b.p - 0.5);
   const pool = analyses.filter(a => a.reliable).flatMap(a => a.bets)
-    .filter(b => b.ev >= MIN_EV && b.p >= 0.5 && b.dec <= 2.3)
+    .filter(b => {
+      // Market discrepancy guard: filter out bets where model vs market divergence > 20%
+      // to prevent recommending picks where unmodeled news (like late injuries) distorts edge.
+      if (Math.abs(b.pModel - b.pMkt) > 0.20) return false;
+      return b.ev >= MIN_EV && b.p >= 0.5 && b.dec <= 2.3;
+    })
     .sort((x, y) => score(y) - score(x));
   const seen = new Set(), out = [];
   for (const b of pool) { if (seen.has(b.gameId)) continue; seen.add(b.gameId); out.push(b); if (out.length >= limit) break; }
