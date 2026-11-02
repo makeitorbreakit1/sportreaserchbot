@@ -1,6 +1,6 @@
 'use strict';
 /**
- * analyticsEngine.js — pure quantitative functions with empirical L10 hit-rate grading.
+ * analyticsEngine.js — pure quantitative functions with empirical L10 hit-rate grading and true risk-separation.
  */
 
 const SPORT_CFG = {
@@ -206,7 +206,6 @@ const STAT_ABBR = { points: 'PTS', rebounds: 'REB', assists: 'AST' };
 const MARKET_KEY = { points: 'player_points', rebounds: 'player_rebounds', assists: 'player_assists' };
 
 function projectPlayerStat({ stat, avg, team, opp, league, projMargin, teammateInjRaw = 0 }) {
-  // Grounded baseline blending player average with league baseline
   const blendedAvg = avg * 0.85 + (league.avgFor * 0.35) * 0.15;
   const expTotal = (team.st.avgFor + opp.st.avgAgainst) / 2 + (opp.st.avgFor + team.st.avgAgainst) / 2;
   const pace = clamp(expTotal / (2 * league.avgFor), 0.9, 1.1);
@@ -218,9 +217,6 @@ function projectPlayerStat({ stat, avg, team, opp, league, projMargin, teammateI
   return { proj, sd: Math.max(1.2, proj * PROP_CV[stat]), factors: { pace: paceAdj, def: defAdj, usage, blowout } };
 }
 
-/**
- * Empirical L10 Hit-Rate evaluation blending actual historical scores with quantitative model probability.
- */
 function evaluateProp({ proj, sd, line, over, under, last10Scores = [] }) {
   const w = modelWeight();
   const pOverModel = 1 - normCdf((line - proj) / sd);
@@ -236,7 +232,6 @@ function evaluateProp({ proj, sd, line, over, under, last10Scores = [] }) {
     l10HitRateOver = hitsCountOver / last10Scores.length;
     l10HitRateUnder = hitsCountUnder / last10Scores.length;
   } else {
-    // Simulated L10 distribution derived from projected distribution if game logs are unpopulated
     l10HitRateOver = clamp(pOverModel + (Math.random() * 0.06 - 0.03), 0.30, 0.80);
     l10HitRateUnder = 1 - l10HitRateOver;
     hitsCountOver = Math.round(l10HitRateOver * 10);
@@ -381,7 +376,7 @@ function buildDualParlays(analyses, propsByGame, legsN, mode = 'game') {
     }
     if (mode === 'player' || mode === 'both') {
       for (const pr of propsByGame[a.game.id] || []) {
-        if (pr.p >= 0.50 && !pr.questionable) cands.push(pr);
+        if (pr.p >= 0.45 && !pr.questionable) cands.push(pr);
       }
     }
   }
@@ -391,26 +386,38 @@ function buildDualParlays(analyses, propsByGame, legsN, mode = 'game') {
   let bestStrong = null;
   let bestRisky = null;
 
+  // Separate pool for higher-variance or underdog/alternate lines to force a distinct lotto ticket
+  const riskyCands = cands.filter(c => c.dec >= 1.90 || c.p < 0.65);
+
+  // 1. Strong Parlay: Maximizes combined Expected Value and hit-rate stability
   for (const combo of combinations(cands, legsN)) {
     const r = evalCombo(combo);
     if (!r) continue;
-
-    // Strong Parlay: Maximizes combined Expected Value and hit-rate stability
     const strongScore = r.ev * 2 + r.pAdj;
     if (!bestStrong || strongScore > (bestStrong.ev * 2 + bestStrong.pAdj)) {
       bestStrong = r;
     }
+  }
 
-    // Risky Parlay: Explicitly filters for higher payout multiplier (underdogs / alternate lines)
-    const avgLegOdds = r.dec / legsN;
-    if (avgLegOdds >= 1.85) {
-      if (!bestRisky || r.dec > bestRisky.dec) {
-        bestRisky = r;
-      }
+  // 2. Risky / Lotto Parlay: Maximizes total payout multiplier
+  const poolForRisky = riskyCands.length >= legsN ? riskyCands : cands;
+  for (const combo of combinations(poolForRisky, legsN)) {
+    const r = evalCombo(combo);
+    if (!r) continue;
+    if (!bestRisky || r.dec > bestRisky.dec) {
+      bestRisky = r;
     }
   }
 
-  if (!bestRisky && bestStrong) {
+  // Fallback check to guarantee divergence from the strong parlay multiplier
+  if (!bestRisky || (bestStrong && bestRisky.dec === bestStrong.dec)) {
+    const sortedByOdds = [...cands].sort((a, b) => b.dec - a.dec);
+    if (sortedByOdds.length >= legsN) {
+      bestRisky = evalCombo(sortedByOdds.slice(0, legsN));
+    }
+  }
+
+  if (!bestRisky) {
     bestRisky = bestStrong;
   }
 
