@@ -153,7 +153,7 @@ function buildProfile(sport, teamName, ctx) {
   }
 
   return { name: teamName, st, rating, injuries, leaders, weather: sb?.weather || null,
-           strength: rating.rating - (injuries.penalty + manualPenalty) };
+            strength: rating.rating - (injuries.penalty + manualPenalty) };
 }
 
 function makeBet({ type, gameId, side, team, line, label, pModel, pMkt, price }) {
@@ -161,7 +161,7 @@ function makeBet({ type, gameId, side, team, line, label, pModel, pMkt, price })
   const p = w * pModel + (1 - w) * pMkt;
   const ev = expectedValue(p, price.dec);
   return { type, gameId, side, team, line, label, pModel, pMkt, p, american: price.american, dec: price.dec,
-           book: price.book, ev, kelly: kellyStake(p, price.dec), tier: confidenceTier(ev, p) };
+            book: price.book, ev, kelly: kellyStake(p, price.dec), tier: confidenceTier(ev, p) };
 }
 
 function analyzeGame(sport, game, ctx, h2hMargin = null) {
@@ -194,7 +194,6 @@ function analyzeGame(sport, game, ctx, h2hMargin = null) {
   // 3. Total Points (Over/Under) Evaluation
   if (game.total && home.st && away.st && home.st.avgFor != null && away.st.avgFor != null) {
     const t = game.total;
-    // Projected total is the sum of both teams' expected scoring output
     const leagueAvgFor = ctx.standings?.league?.avgFor || (sport === 'nba' ? 115 : 22);
     const homeExp = (home.st.avgFor + away.st.avgAgainst) / 2;
     const awayExp = (away.st.avgFor + home.st.avgAgainst) / 2;
@@ -203,19 +202,21 @@ function analyzeGame(sport, game, ctx, h2hMargin = null) {
     const pOverModel = 1 - normCdf((t.point - projTotal) / cfg.totalSd);
     const mktOverFair = t.over && t.under ? noVig(t.over.american, t.under.american)[0] : 0.5;
 
+    const matchup = `${game.away} @ ${game.home}`;
+
     if (t.over) {
       bets.push(makeBet({ type: 'TOTAL', gameId: game.id, side: 'over', team: 'Over', line: t.point,
-        label: `Over ${t.point}`, pModel: pOverModel, pMkt: mktOverFair, price: t.over }));
+        label: `Over ${t.point} (${matchup})`, pModel: pOverModel, pMkt: mktOverFair, price: t.over }));
     }
     if (t.under) {
       bets.push(makeBet({ type: 'TOTAL', gameId: game.id, side: 'under', team: 'Under', line: t.point,
-        label: `Under ${t.point}`, pModel: 1 - pOverModel, pMkt: 1 - mktOverFair, price: t.under }));
+        label: `Under ${t.point} (${matchup})`, pModel: 1 - pOverModel, pMkt: 1 - mktOverFair, price: t.under }));
     }
   }
 
   const reliable = home.rating.known && away.rating.known;
   return { sport, game, home, away, projMargin, pHomeModel, h2hAdj, bets, reliable,
-           pMktHome: game.ml?.fairHome ?? null, pHome: bets.find(b => b.type === 'ML' && b.side === 'home')?.p ?? pHomeModel };
+            pMktHome: game.ml?.fairHome ?? null, pHome: bets.find(b => b.type === 'ML' && b.side === 'home')?.p ?? pHomeModel };
 }
 
 // ───────────────────────── Player props (NBA) ─────────────────────────
@@ -247,7 +248,7 @@ function evaluateProp({ proj, sd, line, over, under }) {
   const pickOver = evO >= evU;
   const price = pickOver ? o : u;
   return { side: pickOver ? 'Over' : 'Under', p: pickOver ? pOver : 1 - pOver, pModel: pickOver ? pOverModel : 1 - pOverModel,
-           ev: pickOver ? evO : evU, american: price.american, dec: price.dec, book: price.book };
+            ev: pickOver ? evO : evU, american: price.american, dec: price.dec, book: price.book };
 }
 
 function buildProps(analysis, ctx, live) {
