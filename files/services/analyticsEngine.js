@@ -78,16 +78,30 @@ function confidenceTier(ev, p) {
   return { key: 'NONE', label: 'NO EDGE', emoji: '⚪', color: 0x95a5a6 };
 }
 
-function teamRating(sport, st) {
+function teamRating(sport, st, apiSportsDef = null, teamName = '') {
   const cfg = SPORT_CFG[sport];
-  if (!st) return { rating: 0, base: 0, form: 0, gp: 0, known: false };
-  const raw = st.avgFor != null && st.avgAgainst != null ? st.avgFor - st.avgAgainst : (st.winPct - 0.5) * cfg.winPctToMargin;
-  const shrink = st.gp / (st.gp + cfg.shrinkK);
+  if (!st && !apiSportsDef) return { rating: 0, base: 0, form: 0, gp: 0, known: false };
+
+  let raw = st && st.avgFor != null && st.avgAgainst != null 
+    ? st.avgFor - st.avgAgainst 
+    : st ? (st.winPct - 0.5) * cfg.winPctToMargin : 0;
+
+  // Integrate API-Sports defensive ratings factor for NBA
+  if (sport === 'nba' && apiSportsDef && teamName) {
+    const normT = normName(teamName);
+    const defAllowed = apiSportsDef[normT];
+    if (defAllowed) {
+      const defAdvantage = 112.0 - defAllowed;
+      raw = (raw + defAdvantage) / 2;
+    }
+  }
+
+  const shrink = st ? st.gp / (st.gp + cfg.shrinkK) : 0.8;
   let formDelta = 0;
-  if (st.l10Pct != null) formDelta = st.l10Pct - st.winPct;
-  else if (st.streak != null) formDelta = clamp(st.streak, -6, 6) * 0.03;
+  if (st?.l10Pct != null) formDelta = st.l10Pct - st.winPct;
+  else if (st?.streak != null) formDelta = clamp(st.streak, -6, 6) * 0.03;
   const form = clamp(formDelta * cfg.formScale, -cfg.formCap, cfg.formCap) * shrink;
-  return { rating: raw * shrink + form, base: raw * shrink, form, gp: st.gp, known: true };
+  return { rating: raw * shrink + form, base: raw * shrink, form, gp: st?.gp || 50, known: true };
 }
 
 const STATUS_WEIGHTS = [
@@ -118,7 +132,10 @@ function injuryPenalty(sport, injuries = [], ppgByName = {}) {
 function buildProfile(sport, teamName, ctx) {
   const stKey = findKey(teamName, Object.keys(ctx.standings?.byName || {}));
   const st = stKey ? ctx.standings.byName[stKey] : null;
-  const rating = teamRating(sport, st);
+  
+  const apiSportsDef = ctx.apiSportsDefRatings || {};
+  const rating = teamRating(sport, st, apiSportsDef, teamName);
+
   const injKey = findKey(teamName, Object.keys(ctx.injuries?.byTeam || {}));
   const sbKey = findKey(teamName, Object.keys(ctx.scoreboard?.byTeam || {}));
   const sb = sbKey ? ctx.scoreboard.byTeam[sbKey] : null;
@@ -141,7 +158,7 @@ function makeBet({ type, gameId, side, team, line, label, pModel, pMkt, price })
   const p = w * pModel + (1 - w) * pMkt;
   const ev = expectedValue(p, price.dec);
   return { type, gameId, side, team, line, label, pModel, pMkt, p, american: price.american, dec: price.dec,
-            book: price.book, ev, kelly: kellyStake(p, price.dec), tier: confidenceTier(ev, p) };
+           book: price.book, ev, kelly: kellyStake(p, price.dec), tier: confidenceTier(ev, p) };
 }
 
 function analyzeGame(sport, game, ctx, h2hMargin = null) {
@@ -180,7 +197,7 @@ function analyzeGame(sport, game, ctx, h2hMargin = null) {
 
   const reliable = home.rating.known && away.rating.known;
   return { sport, game, home, away, projMargin, pHomeModel, h2hAdj, bets, reliable,
-            pMktHome: game.ml?.fairHome ?? null, pHome: bets.find(b => b.type === 'ML' && b.side === 'home')?.p ?? pHomeModel };
+           pMktHome: game.ml?.fairHome ?? null, pHome: bets.find(b => b.type === 'ML' && b.side === 'home')?.p ?? pHomeModel };
 }
 
 const PROP_CV = { points: 0.30, rebounds: 0.40, assists: 0.45 };
@@ -290,7 +307,6 @@ function* combinations(arr, k, start = 0, acc = []) {
   for (let i = start; i < arr.length; i++) { acc.push(arr[i]); yield* combinations(arr, k, i + 1, acc); acc.pop(); }
 }
 
-/** Dual Parlay Builder: Returns both a Strong Parlay (optimized EV/Win%) and a Risky Parlay (max odds/payout) */
 function buildDualParlays(analyses, propsByGame, legsN, mode = 'game') {
   const cands = [];
   for (const a of analyses) {
@@ -318,13 +334,11 @@ function buildDualParlays(analyses, propsByGame, legsN, mode = 'game') {
     const r = evalCombo(combo);
     if (!r) continue;
 
-    // Strong Parlay metrics: Maximizes EV and Win probability
     const strongScore = r.ev * 2 + r.pAdj;
     if (!bestStrong || strongScore > (bestStrong.ev * 2 + bestStrong.pAdj)) {
       bestStrong = r;
     }
 
-    // Risky Parlay metrics: Maximizes Decimal Odds / Payout while maintaining realistic legs
     if (!bestRisky || r.dec > bestRisky.dec) {
       bestRisky = r;
     }
