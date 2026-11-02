@@ -20,7 +20,9 @@ const SPORTS = {
   nhl: { label: 'NHL', oddsKey: 'icehockey_nhl', espn: 'hockey/nhl', windowHours: 36 },
   mlb: { label: 'MLB', oddsKey: 'baseball_mlb', espn: 'baseball/mlb', windowHours: 36 },
 };
-const SPORT_CHOICES = Object.entriesSPORTS = Object.entries(SPORTS).map(([value, c]) => ({ name: c.label, value }));
+
+// FIXED: Cleaned up invalid assignment syntax here
+const SPORT_CHOICES = Object.entries(SPORTS).map(([value, c]) => ({ name: c.label, value }));
 
 const ODDS_BASE = 'https://api.the-odds-api.com/v4';
 const ESPN_SITE = 'https://site.api.espn.com/apis/site/v2/sports';
@@ -51,7 +53,7 @@ function summarizeSpread(rows) {
   const counts = new Map();
   rows.forEach(r => counts.set(r.point, (counts.get(r.point) || 0) + 1));
   const sorted = [...counts.entries()].sort((a, b) => b[1] - a[1] || Math.abs(a[0]) - Math.abs(b[0]));
-  const point = sorted[0][0];                          // consensus (most common) home line
+  const point = sorted[0][0];                           // consensus (most common) home line
   const at = rows.filter(r => r.point === point);
   const fairHome = mean(at.map(r => noVig(r.home, r.away)[0]));
   return { point, fairHome, fairAway: 1 - fairHome, home: bestPrice(at, 'home'), away: bestPrice(at, 'away'), nBooks: at.length };
@@ -97,7 +99,6 @@ async function getSlate(sport) {
   const cfg = SPORTS[sport];
   const res = await cached(`odds:${sport}`, TTL.ODDS, async () => {
     if (!process.env.ODDS_API_KEY) throw new Error('ODDS_API_KEY is not set');
-    // Added totals to markets parameter request string
     const url = `${ODDS_BASE}/sports/${cfg.oddsKey}/odds/?apiKey=${encodeURIComponent(process.env.ODDS_API_KEY)}`
       + '&regions=us&markets=h2h,spreads,totals&oddsFormat=american&dateFormat=iso';
     const { data, headers } = await guardedFetch('odds', url, { cost: 3 });
@@ -116,7 +117,6 @@ function findGame(games, a, b) {
 }
 
 // ───────────────────────── Balldontlie API Integration ─────────────────────────
-/** Fetches advanced team metrics (season averages/pace indicators) using Railway env key */
 async function getBalldontlieTeamStats(season, teamIds = []) {
   return cached(`bdl:stats:${season}:${teamIds.join(',')}`, TTL.STANDINGS, async () => {
     if (!process.env.BALLDONTLIE_API_KEY) return null;
@@ -212,13 +212,12 @@ async function getScoreboard(sport) {
   }, { optional: true });
 }
 
-/** All ESPN context + Balldontlie stats for a sport in parallel. */
 async function getAnalysisContext(sport) {
   const [st, inj, sb, bdl] = await Promise.all([
     getStandings(sport), 
     getInjuries(sport), 
     getScoreboard(sport),
-    getBalldontlieTeamStats(2025) // Pulls current/recent season stats context
+    getBalldontlieTeamStats(2025)
   ]);
   return {
     standings: st.value, injuries: inj.value, scoreboard: sb.value, balldontlie: bdl?.value,
