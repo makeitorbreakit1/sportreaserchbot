@@ -27,8 +27,10 @@ module.exports = {
       const mode = interaction.options.getString('type') || 'game';
 
       const slate = await getSlate(sport);
-      if (!slate.games.length) {
-        return void await interaction.editReply({ embeds: [errorEmbed('No games found', `No active ${SPORTS[sport].label} games available for parlay calculation right now.`)] });
+      if (!slate.games || !slate.games.length) {
+        return void await interaction.editReply({ 
+          embeds: [errorEmbed('No games found', `No active ${SPORTS[sport]?.label || sport} games available for parlay calculation right now.`)] 
+        });
       }
 
       const ctx = await getAnalysisContext(sport);
@@ -36,7 +38,8 @@ module.exports = {
       const propsByGame = {};
 
       for (const game of slate.games) {
-        const h2h = await getH2HMargin(game.home, game.away);
+        // Safe fallback if H2H lookup fails or times out
+        const h2h = await getH2HMargin(game.home, game.away).catch(() => ({ margin: 0 }));
         const analysis = analyzeGame(sport, game, ctx, h2h.margin);
         analyses.push(analysis);
 
@@ -48,6 +51,14 @@ module.exports = {
       }
 
       const parlays = buildDualParlays(analyses, propsByGame, legsN, mode);
+      
+      // Guard against null/empty parlays
+      if (!parlays || !parlays.strong) {
+        return void await interaction.editReply({ 
+          embeds: [errorEmbed('Not Enough Matching Legs', `Could not find enough valid ${mode} legs for a ${legsN}-leg parlay right now. Try lowering the legs count or selecting 'both'.`)] 
+        });
+      }
+
       const meta = { stale: slate.stale || ctx.stale, blocked: slate.blocked || ctx.blocked, missing: ctx.missing };
       const embed = lineupEmbed(SPORTS[sport].label, parlays, legsN, mode, meta);
 
