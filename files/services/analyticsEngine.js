@@ -1,16 +1,8 @@
 'use strict';
 /**
  * analyticsEngine.js — pure functions, no network I/O.
- *
- * Pipeline per game:
- *   standings → shrunken power rating (+ form) → minus injury penalty → + home-field edge (+ H2H nudge)
- *   → projected margin → Normal(margin, σ_sport) → win % and spread-cover %
- *   → projected total points → Normal(total, σ_total) → over/under %
- *   → blended with de-vigged market probability → EV vs best available price.
  */
 
-// ───────────────────────── Sport configuration ─────────────────────────
-// Margin units: points (NBA/NFL), goals (NHL), runs (MLB). sd = std-dev of final margin.
 const SPORT_CFG = {
   nba: { homeAdv: 2.6, sd: 12.0, totalSd: 15.5, shrinkK: 15, winPctToMargin: 30, formScale: 8, formCap: 3.0, h2hWeight: 0.08, h2hCap: 2.0,
          injuryCap: 10, injuryDefault: 0.35, injuryPos: {} },
@@ -24,7 +16,7 @@ const SPORT_CFG = {
          injuryCap: 1.2, injuryDefault: 0.08, injuryPos: { SP: 0.5, P: 0.12, RP: 0.05, C: 0.12 } },
 };
 
-const MIN_EV = 0.01; // 1% minimum blended edge to be called "+EV"
+const MIN_EV = 0.01;
 const clamp = (x, a, b) => Math.min(b, Math.max(a, x));
 const modelWeight = () => {
   const raw = process.env.MODEL_WEIGHT;
@@ -32,12 +24,10 @@ const modelWeight = () => {
   return Number.isFinite(v) ? clamp(v, 0, 1) : 0.35;
 };
 
-// ───────────────────────── Manual Injury & Starter Overrides ─────────────────────────
 const MANUAL_OVERRIDES = {
   'philadelphia eagles': { qbOut: true, penalty: 6.5 },
 };
 
-// ───────────────────────── Name helpers ─────────────────────────
 function normName(s = '') {
   return String(s).toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '')
     .replace(/[^a-z0-9 ]/g, ' ').replace(/\s+/g, ' ').trim();
@@ -58,7 +48,6 @@ function findKey(query, names, minScore = 20) {
   return bs >= minScore ? best : null;
 }
 
-// ───────────────────────── Odds math ─────────────────────────
 const americanToDecimal = a => (a > 0 ? 1 + a / 100 : 1 + 100 / Math.abs(a));
 const decimalToAmerican = d => (d >= 2 ? Math.round((d - 1) * 100) : Math.round(-100 / (d - 1)));
 const americanToImplied = a => 1 / americanToDecimal(a);
@@ -74,7 +63,6 @@ function kellyStake(p, dec, fraction = 0.25, cap = 0.02) {
   return clamp(((b * p - (1 - p)) / b) * fraction, 0, cap);
 }
 
-// Standard normal CDF
 function erf(x) {
   const s = Math.sign(x); x = Math.abs(x);
   const t = 1 / (1 + 0.3275911 * x);
@@ -90,13 +78,10 @@ function confidenceTier(ev, p) {
   return { key: 'NONE', label: 'NO EDGE', emoji: '⚪', color: 0x95a5a6 };
 }
 
-// ───────────────────────── Power rating ─────────────────────────
 function teamRating(sport, st) {
   const cfg = SPORT_CFG[sport];
   if (!st) return { rating: 0, base: 0, form: 0, gp: 0, known: false };
-  const raw = st.avgFor != null && st.avgAgainst != null
-    ? st.avgFor - st.avgAgainst
-    : (st.winPct - 0.5) * cfg.winPctToMargin;
+  const raw = st.avgFor != null && st.avgAgainst != null ? st.avgFor - st.avgAgainst : (st.winPct - 0.5) * cfg.winPctToMargin;
   const shrink = st.gp / (st.gp + cfg.shrinkK);
   let formDelta = 0;
   if (st.l10Pct != null) formDelta = st.l10Pct - st.winPct;
@@ -105,7 +90,6 @@ function teamRating(sport, st) {
   return { rating: raw * shrink + form, base: raw * shrink, form, gp: st.gp, known: true };
 }
 
-// ───────────────────────── Injury subtraction model ─────────────────────────
 const STATUS_WEIGHTS = [
   [/\bout\b|injured reserve|suspen|\bir\b/i, 1.0],
   [/doubtful/i, 0.85],
@@ -131,7 +115,6 @@ function injuryPenalty(sport, injuries = [], ppgByName = {}) {
   return { penalty: cfg.injuryCap * (1 - Math.exp(-raw / cfg.injuryCap)), raw, items };
 }
 
-// ───────────────────────── Game model ─────────────────────────
 function buildProfile(sport, teamName, ctx) {
   const stKey = findKey(teamName, Object.keys(ctx.standings?.byName || {}));
   const st = stKey ? ctx.standings.byName[stKey] : null;
@@ -147,13 +130,10 @@ function buildProfile(sport, teamName, ctx) {
   let manualPenalty = 0;
   const normTeam = normName(teamName);
   for (const [key, val] of Object.entries(MANUAL_OVERRIDES)) {
-    if (normTeam.includes(key) && val.qbOut) {
-      manualPenalty += val.penalty;
-    }
+    if (normTeam.includes(key) && val.qbOut) manualPenalty += val.penalty;
   }
 
-  return { name: teamName, st, rating, injuries, leaders, weather: sb?.weather || null,
-            strength: rating.rating - (injuries.penalty + manualPenalty) };
+  return { name: teamName, st, rating, injuries, leaders, weather: sb?.weather || null, strength: rating.rating - (injuries.penalty + manualPenalty) };
 }
 
 function makeBet({ type, gameId, side, team, line, label, pModel, pMkt, price }) {
@@ -173,45 +153,29 @@ function analyzeGame(sport, game, ctx, h2hMargin = null) {
   const pHomeModel = normCdf(projMargin / cfg.sd);
   const bets = [];
 
-  // 1. Moneyline Evaluation
   if (game.ml) {
-    bets.push(makeBet({ type: 'ML', gameId: game.id, side: 'home', team: game.home, line: null, label: `${game.home} ML`,
-      pModel: pHomeModel, pMkt: game.ml.fairHome, price: game.ml.home }));
-    bets.push(makeBet({ type: 'ML', gameId: game.id, side: 'away', team: game.away, line: null, label: `${game.away} ML`,
-      pModel: 1 - pHomeModel, pMkt: game.ml.fairAway, price: game.ml.away }));
+    bets.push(makeBet({ type: 'ML', gameId: game.id, side: 'home', team: game.home, line: null, label: `${game.home} ML`, pModel: pHomeModel, pMkt: game.ml.fairHome, price: game.ml.home }));
+    bets.push(makeBet({ type: 'ML', gameId: game.id, side: 'away', team: game.away, line: null, label: `${game.away} ML`, pModel: 1 - pHomeModel, pMkt: game.ml.fairAway, price: game.ml.away }));
   }
 
-  // 2. Point Spread Evaluation
   if (game.spread) {
     const s = game.spread;
     const pHomeCover = normCdf((projMargin + s.point) / cfg.sd);
-    bets.push(makeBet({ type: 'SPREAD', gameId: game.id, side: 'home', team: game.home, line: s.point,
-      label: `${game.home} ${fmtLine(s.point)}`, pModel: pHomeCover, pMkt: s.fairHome, price: s.home }));
-    bets.push(makeBet({ type: 'SPREAD', gameId: game.id, side: 'away', team: game.away, line: -s.point,
-      label: `${game.away} ${fmtLine(-s.point)}`, pModel: 1 - pHomeCover, pMkt: s.fairAway, price: s.away }));
+    bets.push(makeBet({ type: 'SPREAD', gameId: game.id, side: 'home', team: game.home, line: s.point, label: `${game.home} ${fmtLine(s.point)}`, pModel: pHomeCover, pMkt: s.fairHome, price: s.home }));
+    bets.push(makeBet({ type: 'SPREAD', gameId: game.id, side: 'away', team: game.away, line: -s.point, label: `${game.away} ${fmtLine(-s.point)}`, pModel: 1 - pHomeCover, pMkt: s.fairAway, price: s.away }));
   }
 
-  // 3. Total Points (Over/Under) Evaluation
   if (game.total && home.st && away.st && home.st.avgFor != null && away.st.avgFor != null) {
     const t = game.total;
-    const leagueAvgFor = ctx.standings?.league?.avgFor || (sport === 'nba' ? 115 : 22);
     const homeExp = (home.st.avgFor + away.st.avgAgainst) / 2;
     const awayExp = (away.st.avgFor + home.st.avgAgainst) / 2;
     const projTotal = homeExp + awayExp;
-
     const pOverModel = 1 - normCdf((t.point - projTotal) / cfg.totalSd);
     const mktOverFair = t.over && t.under ? noVig(t.over.american, t.under.american)[0] : 0.5;
-
     const matchup = `${game.away} @ ${game.home}`;
 
-    if (t.over) {
-      bets.push(makeBet({ type: 'TOTAL', gameId: game.id, side: 'over', team: 'Over', line: t.point,
-        label: `Over ${t.point} (${matchup})`, pModel: pOverModel, pMkt: mktOverFair, price: t.over }));
-    }
-    if (t.under) {
-      bets.push(makeBet({ type: 'TOTAL', gameId: game.id, side: 'under', team: 'Under', line: t.point,
-        label: `Under ${t.point} (${matchup})`, pModel: 1 - pOverModel, pMkt: 1 - mktOverFair, price: t.under }));
-    }
+    if (t.over) bets.push(makeBet({ type: 'TOTAL', gameId: game.id, side: 'over', team: 'Over', line: t.point, label: `Over ${t.point} (${matchup})`, pModel: pOverModel, pMkt: mktOverFair, price: t.over }));
+    if (t.under) bets.push(makeBet({ type: 'TOTAL', gameId: game.id, side: 'under', team: 'Under', line: t.point, label: `Under ${t.point} (${matchup})`, pModel: 1 - pOverModel, pMkt: 1 - mktOverFair, price: t.under }));
   }
 
   const reliable = home.rating.known && away.rating.known;
@@ -219,7 +183,6 @@ function analyzeGame(sport, game, ctx, h2hMargin = null) {
             pMktHome: game.ml?.fairHome ?? null, pHome: bets.find(b => b.type === 'ML' && b.side === 'home')?.p ?? pHomeModel };
 }
 
-// ───────────────────────── Player props (NBA) ─────────────────────────
 const PROP_CV = { points: 0.30, rebounds: 0.40, assists: 0.45 };
 const PROP_DEF_COEF = { points: 0.6, rebounds: 0.25, assists: 0.3 };
 const PROP_USAGE_COEF = { points: 1, rebounds: 0.4, assists: 0.8 };
@@ -275,13 +238,12 @@ function buildProps(analysis, ctx, live) {
       const ev = evaluateProp({ proj: pr.proj, sd: pr.sd, line, over: liveLine?.over, under: liveLine?.under });
       out.push({ type: 'PROP', gameId: analysis.game.id, team: team.name, player: l.name, stat, line, estimated: !liveLine,
         avg: l.value, proj: pr.proj, sd: pr.sd, factors: pr.factors, questionable: !!own, ...ev,
-        label: `${l.name} ${ev.side} ${line} ${STAT_ABBR[stat]}`, kelly: kellyStake(ev.p, ev.dec), tier: confidenceTier(ev.ev, ev.p) });
+        label: `${l.name} ${ev.side} ${line} ${STAT_ABBR[stat]} (${team.name})`, kelly: kellyStake(ev.p, ev.dec), tier: confidenceTier(ev.ev, ev.p) });
     }
   }
   return out.sort((a, b) => b.ev - a.ev);
 }
 
-// ───────────────────────── Best bets & parlay lineup ─────────────────────────
 function pickBestBets(analyses, limit = 5) {
   const score = b => b.ev + 0.3 * (b.p - 0.5);
   const pool = analyses.filter(a => a.reliable).flatMap(a => a.bets)
@@ -328,35 +290,52 @@ function* combinations(arr, k, start = 0, acc = []) {
   for (let i = start; i < arr.length; i++) { acc.push(arr[i]); yield* combinations(arr, k, i + 1, acc); acc.pop(); }
 }
 
-function buildLineup(analyses, propsByGame, legsN) {
+/** Dual Parlay Builder: Returns both a Strong Parlay (optimized EV/Win%) and a Risky Parlay (max odds/payout) */
+function buildDualParlays(analyses, propsByGame, legsN, mode = 'game') {
   const cands = [];
   for (const a of analyses) {
     if (!a.reliable) continue;
-    for (const b of a.bets) {
-      if (b.type === 'ML' && b.p >= 0.3 && b.p <= 0.6) cands.push(b);
-      if (b.type === 'SPREAD' && b.p >= 0.46) cands.push(b);
-      if (b.type === 'TOTAL' && b.p >= 0.5) cands.push(b);
+    if (mode === 'game' || mode === 'both') {
+      for (const b of a.bets) {
+        if (b.type === 'ML' && b.p >= 0.3 && b.p <= 0.6) cands.push(b);
+        if (b.type === 'SPREAD' && b.p >= 0.46) cands.push(b);
+        if (b.type === 'TOTAL' && b.p >= 0.5) cands.push(b);
+      }
     }
-    for (const pr of propsByGame[a.game.id] || []) if (pr.p >= 0.5 && !pr.questionable) cands.push(pr);
+    if (mode === 'player' || mode === 'both') {
+      for (const pr of propsByGame[a.game.id] || []) {
+        if (pr.p >= 0.52 && !pr.questionable) cands.push(pr);
+      }
+    }
   }
-  const top = (type, n) => cands.filter(c => c.type === type).sort((a, b) => b.ev - a.ev).slice(0, n);
-  const pool = [...top('PROP', 7), ...top('ML', 6), ...top('SPREAD', 5), ...top('TOTAL', 5)];
-  if (pool.length < legsN) return null;
 
-  const minDec = Math.pow(1.75, legsN);
-  let best = null, bestAny = null;
-  for (const combo of combinations(pool, legsN)) {
+  if (cands.length < legsN) return { strong: null, risky: null };
+
+  let bestStrong = null;
+  let bestRisky = null;
+
+  for (const combo of combinations(cands, legsN)) {
     const r = evalCombo(combo);
     if (!r) continue;
-    if (!bestAny || r.ev > bestAny.ev) bestAny = r;
-    if (r.dec >= minDec && (!best || r.ev > best.ev)) best = r;
+
+    // Strong Parlay metrics: Maximizes EV and Win probability
+    const strongScore = r.ev * 2 + r.pAdj;
+    if (!bestStrong || strongScore > (bestStrong.ev * 2 + bestStrong.pAdj)) {
+      bestStrong = r;
+    }
+
+    // Risky Parlay metrics: Maximizes Decimal Odds / Payout while maintaining realistic legs
+    if (!bestRisky || r.dec > bestRisky.dec) {
+      bestRisky = r;
+    }
   }
-  return best || bestAny;
+
+  return { strong: bestStrong, risky: bestRisky };
 }
 
 module.exports = {
   SPORT_CFG, MIN_EV, modelWeight, clamp, normName, nameMatchScore, findKey,
   americanToDecimal, decimalToAmerican, americanToImplied, fmtAmerican, fmtLine, noVig, expectedValue, kellyStake,
   normCdf, confidenceTier, teamRating, statusWeight, injuryPenalty, buildProfile, analyzeGame,
-  projectPlayerStat, evaluateProp, buildProps, pickBestBets, evalCombo, buildLineup, STAT_ABBR, MARKET_KEY,
+  projectPlayerStat, evaluateProp, buildProps, pickBestBets, evalCombo, buildDualParlays, STAT_ABBR, MARKET_KEY,
 };
