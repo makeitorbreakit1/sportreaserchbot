@@ -79,13 +79,13 @@ function analyzeEmbed(a, props, meta) {
       `EV ${evText(s.ev)} · ${s.ev >= MIN_EV ? `¼-Kelly ${pct(s.kelly, 2)} of bankroll` : 'no edge: pass'}`) });
   }
 
-  // Added explicit Total Points recommendation with matchup label
+  // Updated Total Points recommendation with explicit matchup inclusion
   const tot = a.bets.filter(b => b.type === 'TOTAL');
   if (tot.length) {
     const t = [...tot].sort((x, y) => y.ev - x.ev)[0];
-    const matchup = `${a.game.away} @ ${a.game.home}`;
+    const matchup = `${a.game.away} vs ${a.game.home}`;
     e.addFields({ name: '📊 Total Points recommendation', value: trim(
-      `${t.ev >= MIN_EV ? '✅' : '➖'} **${t.label}** for **${matchup}** (${fmtAmerican(t.american)} @ ${t.book})\n` +
+      `${t.ev >= MIN_EV ? '✅' : '➖'} **${t.label}** (${matchup}) — ${fmtAmerican(t.american)} @ ${t.book}\n` +
       `Hit rate ${probBar(t.p)} **${pct(t.p)}** (model ${pct(t.pModel)}, market ${pct(t.pMkt)})\n` +
       `EV ${evText(t.ev)} · ${t.ev >= MIN_EV ? `¼-Kelly ${pct(t.kelly, 2)} of bankroll` : 'no edge: pass'}`) });
   }
