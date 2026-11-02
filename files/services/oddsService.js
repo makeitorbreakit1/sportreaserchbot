@@ -9,6 +9,7 @@
  *   ESPN       standings (12h) + injuries (3h) + scoreboard (2h) ... unmetered, own cap
  *   SportsDB   head-to-head, /analyze only, 24h ... 1 call per matchup
  *   Balldontlie team efficiency/stats ..... unmetered / custom integration
+ *   API-Sports NBA defensive ratings ...... custom integration via API_SPORTS_KEY
  */
 const { guardedFetch, cached, syncProviderUsage, TTL } = require('../cache/cacheManager');
 const { americanToDecimal, noVig, normName, findKey, nameMatchScore, MARKET_KEY } = require('./analyticsEngine');
@@ -27,6 +28,7 @@ const ESPN_SITE = 'https://site.api.espn.com/apis/site/v2/sports';
 const ESPN_V2 = 'https://site.api.espn.com/apis/v2/sports';
 const SPORTSDB = 'https://www.thesportsdb.com/api/v1/json';
 const BALLDONTLIE_BASE = 'https://api.balldontlie.io/v1';
+const APISPORTS_NBA_BASE = 'https://v2.nba.api-sports.io';
 
 // ───────────────────────── Odds API ─────────────────────────
 const bestPrice = (rows, side) => {
@@ -51,7 +53,7 @@ function summarizeSpread(rows) {
   const counts = new Map();
   rows.forEach(r => counts.set(r.point, (counts.get(r.point) || 0) + 1));
   const sorted = [...counts.entries()].sort((a, b) => b[1] - a[1] || Math.abs(a[0]) - Math.abs(b[0]));
-  const point = sorted[0][0];                           // consensus (most common) home line
+  const point = sorted[0][0];                      // consensus (most common) home line
   const at = rows.filter(r => r.point === point);
   const fairHome = mean(at.map(r => noVig(r.home, r.away)[0]));
   return { point, fairHome, fairAway: 1 - fairHome, home: bestPrice(at, 'home'), away: bestPrice(at, 'away'), nBooks: at.length };
@@ -112,6 +114,43 @@ async function getSlate(sport) {
 function findGame(games, a, b) {
   const ok = (q, n) => nameMatchScore(q, n) >= 50 || normName(n).split(' ').pop() === normName(q).split(' ').pop();
   return games.find(g => (ok(a, g.home) && ok(b, g.away)) || (ok(b, g.home) && ok(a, g.away))) || null;
+}
+
+// ───────────────────────── API-Sports NBA Integration ─────────────────────────
+async function getApiSportsDefensiveRatings() {
+  return cached(`apisports:nba:standings`, TTL.STANDINGS, async () => {
+    if (!process.env.API_SPORTS_KEY) return null;
+    try {
+      // Using standard 2026 season for API-Sports NBA
+      const url = `${APISPORTS_NBA_BASE}/standings?league=standard&season=2026`;
+      const { data, headers } = await guardedFetch('espnsports', url, { cost: 1 });
+      
+      const defRatings = {};
+      const responseData = data?.response;
+      
+      if (Array.isArray(responseData)) {
+        responseData.forEach(group => {
+          // API-Sports structures standings inside conference or direct arrays
+          const teamsList = group.team_standings || (Array.isArray(group) ? group : [group]);
+          teamsList.forEach(item => {
+            const teamName = item.team?.name;
+            const pointsAgainst = item.points?.against || 0;
+            const wins = item.win?.total ?? item.wins ?? 0;
+            const losses = item.loss?.total ?? item.losses ?? 0;
+            const gp = wins + losses;
+            
+            if (teamName && gp > 0) {
+              defRatings[normName(teamName)] = pointsAgainst / gp;
+            }
+          });
+        });
+      }
+      return defRatings;
+    } catch (error) {
+      console.error('API-Sports defense fetch error:', error.message);
+      return null;
+    }
+  }, { optional: true });
 }
 
 // ───────────────────────── Balldontlie API Integration ─────────────────────────
@@ -216,15 +255,21 @@ async function getScoreboard(sport) {
 }
 
 async function getAnalysisContext(sport) {
-  const [st, inj, sb, bdl] = await Promise.all([
+  const [st, inj, sb, bdl, apiSportsDef] = await Promise.all([
     getStandings(sport), 
     getInjuries(sport), 
     getScoreboard(sport),
-    getBalldontlieTeamStats(2025)
+    getBalldontlieTeamStats(2025),
+    sport === 'nba' ? getApiSportsDefensiveRatings() : Promise.resolve(null)
   ]);
   return {
-    standings: st.value, injuries: inj.value, scoreboard: sb.value, balldontlie: bdl?.value,
-    stale: st.stale || inj.stale || sb.stale, blocked: st.blocked || inj.blocked || sb.blocked,
+    standings: st.value, 
+    injuries: inj.value, 
+    scoreboard: sb.value, 
+    balldontlie: bdl?.value,
+    apiSportsDefRatings: apiSportsDef?.value || apiSportsDef || {},
+    stale: st.stale || inj.stale || sb.stale, 
+    blocked: st.blocked || inj.blocked || sb.blocked,
     missing: [!st.value && 'standings', !inj.value && 'injuries'].filter(Boolean),
   };
 }
