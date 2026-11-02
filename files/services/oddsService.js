@@ -158,15 +158,70 @@ async function getBalldontlieTeamStats(season, teamIds = []) {
   }, { optional: true });
 }
 
-// ───────────────────────── Live Props Handler ─────────────────────────
-async function getLiveProps(sport, game) {
-  if (sport !== 'nba') return { props: [] };
-  return {
-    props: [
-      { playerName: 'LeBron James', statType: 'points', line: 24.5, over: { american: -110, dec: 1.91, book: 'DraftKings' }, under: { american: -110, dec: 1.91, book: 'DraftKings' } },
-      { playerName: 'Stephen Curry', statType: 'points', line: 26.5, over: { american: -108, dec: 1.93, book: 'FanDuel' }, under: { american: -112, dec: 1.89, book: 'FanDuel' } }
-    ]
-  };
+// Fetch real recent player logs (L10) from Balldontlie for empirical hit rates
+async function getPlayerRecentLogs(playerName) {
+  if (!process.env.BALLDONTLIE_API_KEY) return [];
+  
+  return cached(`player_logs:${normName(playerName)}`, TTL.STANDINGS, async () => {
+    try {
+      const searchRes = await fetch(`${BALLDONTLIE_BASE}/players?search=${encodeURIComponent(playerName)}`, {
+        headers: { 'Authorization': process.env.BALLDONTLIE_API_KEY }
+      });
+      if (!searchRes.ok) return [];
+      const searchData = await searchRes.json();
+      const player = searchData.data?.[0];
+      if (!player) return [];
+
+      const statsRes = await fetch(`${BALLDONTLIE_BASE}/stats?player_ids[]=${player.id}&per_page=10`, {
+        headers: { 'Authorization': process.env.BALLDONTLIE_API_KEY }
+      });
+      if (!statsRes.ok) return [];
+      const statsData = await statsRes.json();
+      
+      return statsData.data.map(g => ({
+        pts: g.pts,
+        reb: g.reb,
+        ast: g.ast
+      }));
+    } catch (e) {
+      return [];
+    }
+  }, { optional: true });
+}
+
+// ───────────────────────── Live Props Handler (The Odds API) ─────────────────────────
+async function getLiveProps(sport, gameId) {
+  if (sport !== 'nba' || !process.env.ODDS_API_KEY) return { props: { points: {}, rebounds: {}, assists: {} } };
+  
+  return cached(`props:${gameId}`, TTL.ODDS, async () => {
+    try {
+      const markets = 'player_points,player_rebounds,player_assists';
+      const url = `${ODDS_BASE}/sports/${SPORTS[sport].oddsKey}/events/${gameId}/odds/?apiKey=${encodeURIComponent(process.env.ODDS_API_KEY)}&regions=us&markets=${markets}&oddsFormat=american`;
+      const { data } = await guardedFetch('odds', url, { cost: 3 });
+
+      const props = { points: {}, rebounds: {}, assists: {} };
+
+      for (const book of data.bookmakers || []) {
+        for (const market of book.markets || []) {
+          const statKey = market.key === 'player_points' ? 'points' : market.key === 'player_rebounds' ? 'rebounds' : market.key === 'player_assists' ? 'assists' : null;
+          if (!statKey) continue;
+
+          for (const outcome of market.outcomes || []) {
+            const pName = normName(outcome.description || outcome.name);
+            if (!props[statKey][pName]) {
+              props[statKey][pName] = { point: outcome.point, over: null, under: null, last10Scores: [] };
+            }
+            if (outcome.name === 'Over') props[statKey][pName].over = { american: outcome.price, dec: americanToDecimal(outcome.price), book: book.title };
+            if (outcome.name === 'Under') props[statKey][pName].under = { american: outcome.price, dec: americanToDecimal(outcome.price), book: book.title };
+          }
+        }
+      }
+      return { props };
+    } catch (e) {
+      console.warn('Live props fetch failed or no market posted yet:', e.message);
+      return { props: { points: {}, rebounds: {}, assists: {} } };
+    }
+  }, { optional: true });
 }
 
 // ───────────────────────── ESPN ─────────────────────────
@@ -278,6 +333,7 @@ module.exports = {
   findGame, 
   getH2HMargin, 
   getBalldontlieTeamStats, 
+  getPlayerRecentLogs,
   getAnalysisContext, 
   getLiveProps, 
   findKey 
