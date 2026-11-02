@@ -79,7 +79,6 @@ function analyzeEmbed(a, props, meta) {
       `EV ${evText(s.ev)} · ${s.ev >= MIN_EV ? `¼-Kelly ${pct(s.kelly, 2)} of bankroll` : 'no edge: pass'}`) });
   }
 
-  // Updated Total Points recommendation with explicit matchup inclusion
   const tot = a.bets.filter(b => b.type === 'TOTAL');
   if (tot.length) {
     const t = [...tot].sort((x, y) => y.ev - x.ev)[0];
@@ -123,20 +122,37 @@ function bestBetsEmbed(label, bets, nGames, meta) {
 }
 
 const NUM = ['1️⃣', '2️⃣', '3️⃣', '4️⃣', '5️⃣'];
-function lineupEmbed(label, lu, legsN, meta) {
-  const e = base(0xe74c3c).setTitle(`🎰 ${legsN}-leg high-risk lineup: ${label}`);
+function lineupEmbed(label, parlays, legsN, mode, meta) {
+  const e = base(0x3498db).setTitle(`🎰 ${legsN}-Leg Parlay Engine (${label.toUpperCase()} — ${mode.toUpperCase()})`);
   let d = banner(meta);
-  if (!lu) { e.setDescription(d + 'Not enough qualifying legs on this slate (each game can supply one leg, or two if they are positively correlated). Try fewer legs or check back when more games are posted.'); return e; }
-  e.setDescription(d + '⚠️ **High variance.** Most parlays lose. Shown to make the real math visible, not as a recommendation.');
-  lu.legs.forEach((l, i) => e.addFields({ name: `${NUM[i]} ${l.label}${l.type === 'PROP' && l.estimated ? ' *(est. line)*' : ''}`, value:
-    `${fmtAmerican(l.american)} @ ${l.book} · hit rate ${probBar(l.p, 8)} **${pct(l.p)}**` }));
-  const per10 = (lu.dec - 1) * 10;
-  e.addFields(
-    { name: '🧮 Compound probability', value: `${lu.legs.map(l => pct(l.p, 0)).join(' × ')} = **${pct(lu.pInd, 2)}**` +
-      (Math.abs(lu.pAdj - lu.pInd) > 1e-6 ? `\nCorrelation-adjusted (same-game legs): **${pct(lu.pAdj, 2)}**` : '') +
-      `\nThat is about **1 in ${Math.round(1 / lu.pAdj)}**.` },
-    { name: '💵 Payout', value: `**${fmtAmerican(lu.american)}** (${lu.dec.toFixed(2)}x) · $10 wins **$${per10.toFixed(2)}**\nBreak-even hit rate: ${pct(1 / lu.dec, 2)}` },
-    { name: '📉 Parlay expected value', value: `**${evText(lu.ev)}** per $1 staked${lu.ev < 0 ? '\nNegative EV: bookmaker margin compounds with every leg.' : ''}` });
+
+  if (!parlays.strong && !parlays.risky) {
+    e.setDescription(d + 'Not enough qualifying legs on this slate matching your criteria. Try reducing leg count or checking back later.');
+    return e;
+  }
+
+  e.setDescription(d + 'Quantitative model breakdown separating high-probability +EV legs from high-upside payout legs.');
+
+  if (parlays.strong) {
+    const lu = parlays.strong;
+    const per10 = (lu.dec - 1) * 10;
+    let desc = `**Combined Probability:** ${pct(lu.pInd, 2)}${Math.abs(lu.pAdj - lu.pInd) > 1e-6 ? ` (Correlated: **${pct(lu.pAdj, 2)}**)‰` : ''}\n` +
+               `**Total Odds:** ${fmtAmerican(lu.american)} (${lu.dec.toFixed(2)}x) · $10 wins **$${per10.toFixed(2)}**\n` +
+               `**Expected Value:** ${evText(lu.ev)} per $1\n\n**Legs:**\n` +
+               lu.legs.map((l, i) => `${NUM[i]} **${l.label}** (${fmtAmerican(l.american)} @ ${l.book} — ${pct(l.p)} win rate)`).join('\n');
+    e.addFields({ name: '🛡️ Option 1: Strong / Optimized Parlay (Balanced +EV)', value: trim(desc, 1024) });
+  }
+
+  if (parlays.risky) {
+    const lu = parlays.risky;
+    const per10 = (lu.dec - 1) * 10;
+    let desc = `**Combined Probability:** ${pct(lu.pInd, 2)}${Math.abs(lu.pAdj - lu.pInd) > 1e-6 ? ` (Correlated: **${pct(lu.pAdj, 2)}**)‰` : ''}\n` +
+               `**Total Odds:** ${fmtAmerican(lu.american)} (${lu.dec.toFixed(2)}x) · $10 wins **$${per10.toFixed(2)}**\n` +
+               `**Expected Value:** ${evText(lu.ev)} per $1\n\n**Legs:**\n` +
+               lu.legs.map((l, i) => `${NUM[i]} **${l.label}** (${fmtAmerican(l.american)} @ ${l.book} — ${pct(l.p)} win rate)`).join('\n');
+    e.addFields({ name: '🔥 Option 2: Risky / Lotto Parlay (Max Upside Payout)', value: trim(desc, 1024) });
+  }
+
   return e;
 }
 
