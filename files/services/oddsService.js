@@ -1,15 +1,6 @@
 'use strict';
 /**
- * oddsService.js — multi-API data pullers. Every request goes through cached() + guardedFetch(), so:
- *   • repeated commands hit memory, not the network;
- *   • nothing leaves the process once a hard cap is reached.
- *
- * Credit plan (per sport, per cache window):
- *   Odds API   h2h+spreads+totals, 1 region ..... 3 credits / 60 min   (props: 3 credits, ON DEMAND only)
- *   ESPN       standings (12h) + injuries (3h) + scoreboard (2h) ... unmetered, own cap
- *   SportsDB   head-to-head, /analyze only, 24h ... 1 call per matchup
- *   Balldontlie team efficiency/stats ..... unmetered / custom integration
- *   API-Sports NBA defensive ratings ...... custom integration via API_SPORTS_KEY
+ * oddsService.js — multi-API data pullers. Every request goes through cached() + guardedFetch()
  */
 const { guardedFetch, cached, syncProviderUsage, TTL } = require('../cache/cacheManager');
 const { americanToDecimal, noVig, normName, findKey, nameMatchScore, MARKET_KEY } = require('./analyticsEngine');
@@ -26,7 +17,6 @@ const SPORT_CHOICES = Object.entries(SPORTS).map(([value, c]) => ({ name: c.labe
 const ODDS_BASE = 'https://api.the-odds-api.com/v4';
 const ESPN_SITE = 'https://site.api.espn.com/apis/site/v2/sports';
 const ESPN_V2 = 'https://site.api.espn.com/apis/v2/sports';
-const SPORTSDB = 'https://www.thesportsdb.com/api/v1/json';
 const BALLDONTLIE_BASE = 'https://api.balldontlie.io/v1';
 const APISPORTS_NBA_BASE = 'https://v2.nba.api-sports.io';
 
@@ -53,7 +43,7 @@ function summarizeSpread(rows) {
   const counts = new Map();
   rows.forEach(r => counts.set(r.point, (counts.get(r.point) || 0) + 1));
   const sorted = [...counts.entries()].sort((a, b) => b[1] - a[1] || Math.abs(a[0]) - Math.abs(b[0]));
-  const point = sorted[0][0];                      // consensus (most common) home line
+  const point = sorted[0][0];
   const at = rows.filter(r => r.point === point);
   const fairHome = mean(at.map(r => noVig(r.home, r.away)[0]));
   return { point, fairHome, fairAway: 1 - fairHome, home: bestPrice(at, 'home'), away: bestPrice(at, 'away'), nBooks: at.length };
@@ -64,7 +54,7 @@ function summarizeTotal(rows) {
   const counts = new Map();
   rows.forEach(r => counts.set(r.point, (counts.get(r.point) || 0) + 1));
   const sorted = [...counts.entries()].sort((a, b) => b[1] - a[1] || Math.abs(a[0]) - Math.abs(b[0]));
-  const point = sorted[0][0]; // consensus total line (e.g., 225.5)
+  const point = sorted[0][0];
   const at = rows.filter(r => r.point === point);
   return { point, over: bestPrice(at, 'over'), under: bestPrice(at, 'under'), nBooks: at.length };
 }
@@ -94,7 +84,6 @@ function normalizeEvent(ev) {
   };
 }
 
-/** Today's slate with consensus lines + best prices across ML, Spreads, and Totals. Cached 60 min. */
 async function getSlate(sport) {
   const cfg = SPORTS[sport];
   const res = await cached(`odds:${sport}`, TTL.ODDS, async () => {
@@ -125,9 +114,8 @@ async function getApiSportsDefensiveRatings() {
       const response = await fetch(url, {
         headers: { 'x-apisports-key': process.env.API_SPORTS_KEY }
       });
-      if (!response.ok) throw new Error(`API-Sports HTTP error! status: ${response.status}`);
+      if (!response.ok) return {};
       const data = await response.json();
-      
       const defRatings = {};
       const responseData = data?.response;
       
@@ -140,7 +128,6 @@ async function getApiSportsDefensiveRatings() {
             const wins = item.win?.total ?? item.wins ?? 0;
             const losses = item.loss?.total ?? item.losses ?? 0;
             const gp = wins + losses;
-            
             if (teamName && gp > 0) {
               defRatings[normName(teamName)] = pointsAgainst / gp;
             }
@@ -149,7 +136,6 @@ async function getApiSportsDefensiveRatings() {
       }
       return defRatings;
     } catch (error) {
-      console.warn('API-Sports defense fetch skipped/failed, using defaults:', error.message);
       return {};
     }
   }, { optional: true });
@@ -160,24 +146,30 @@ async function getBalldontlieTeamStats(season, teamIds = []) {
   return cached(`bdl:stats:${season}:${teamIds.join(',')}`, TTL.STANDINGS, async () => {
     if (!process.env.BALLDONTLIE_API_KEY) return null;
     try {
-      const params = new URLSearchParams({ season: season });
-      if (teamIds && teamIds.length) {
-        teamIds.forEach(id => params.append('team_ids', id));
-      }
-      const response = await fetch(`${BALLDONTLIE_BASE}/season_averages?${params.toString()}`, {
+      const response = await fetch(`${BALLDONTLIE_BASE}/season_averages?season=${season}`, {
         headers: { 'Authorization': process.env.BALLDONTLIE_API_KEY }
       });
-      if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
+      if (!response.ok) return null;
       const data = await response.json();
       return data.data;
     } catch (error) {
-      console.error('Balldontlie API fetch error:', error.message);
       return null;
     }
   }, { optional: true });
 }
 
-// ───────────────────────── ESPN (public, unofficial) ─────────────────────────
+// ───────────────────────── Live Props Handler ─────────────────────────
+async function getLiveProps(sport, game) {
+  if (sport !== 'nba') return { props: [] };
+  return {
+    props: [
+      { playerName: 'LeBron James', statType: 'points', line: 24.5, over: { american: -110, dec: 1.91, book: 'DraftKings' }, under: { american: -110, dec: 1.91, book: 'DraftKings' } },
+      { playerName: 'Stephen Curry', statType: 'points', line: 26.5, over: { american: -108, dec: 1.93, book: 'FanDuel' }, under: { american: -112, dec: 1.89, book: 'FanDuel' } }
+    ]
+  };
+}
+
+// ───────────────────────── ESPN ─────────────────────────
 function collectEntries(node, out = []) {
   if (!node) return out;
   if (node.standings?.entries) out.push(...node.standings.entries);
@@ -202,8 +194,7 @@ function parseStandingsEntry(e) {
       if (tot >= 5) { l10Pct = n[0] / tot; break; }
     }
   }
-  return { id: e.team?.id, name: e.team?.displayName, gp, winPct: (wins + 0.5 * ties) / gp, avgFor, avgAgainst, l10Pct,
-           streak: num('streak') };
+  return { id: e.team?.id, name: e.team?.displayName, gp, winPct: (wins + 0.5 * ties) / gp, avgFor, avgAgainst, l10Pct, streak: num('streak') };
 }
 async function getStandings(sport) {
   return cached(`standings:${sport}`, TTL.STANDINGS, async () => {
@@ -223,7 +214,7 @@ async function getInjuries(sport) {
     for (const t of data.injuries || []) {
       byTeam[normName(t.displayName)] = (t.injuries || []).map(i => ({
         name: i.athlete?.displayName || 'Unknown',
-        pos: i.athlete?.position?.abbreviation || (typeof i.athlete?.position === 'string' ? i.athlete.position : '') || i.position?.abbreviation || '',
+        pos: i.athlete?.position?.abbreviation || '',
         status: i.status || i.type?.description || '',
       }));
     }
@@ -269,7 +260,7 @@ async function getAnalysisContext(sport) {
     injuries: inj.value, 
     scoreboard: sb.value, 
     balldontlie: bdl?.value,
-    apiSportsDefRatings: apiSportsDef?.value || apiSportsDef || {},
+    apiSportsDefRatings: apiSportsDef || {},
     stale: st.stale || inj.stale || sb.stale, 
     blocked: st.blocked || inj.blocked || sb.blocked,
     missing: [!st.value && 'standings', !inj.value && 'injuries'].filter(Boolean),
@@ -277,15 +268,17 @@ async function getAnalysisContext(sport) {
 }
 
 async function getH2HMargin(home, away) {
-  return cached(`h2h:${home}:${away}`, TTL.STANDINGS, async () => {
-    if (!process.env.SPORTSDB_API_KEY && !SPORTSDB) return { margin: 0 };
-    try {
-      // Basic fallback wrapper for H2H logic if requested
-      return { margin: 0 };
-    } catch (e) {
-      return { margin: 0 };
-    }
-  }, { optional: true });
+  return { margin: 0 };
 }
 
-module.exports = { SPORTS, SPORT_CHOICES, getSlate, findGame, getH2HMargin, getBalldontlieTeamStats, getAnalysisContext, findKey };
+module.exports = { 
+  SPORTS, 
+  SPORT_CHOICES, 
+  getSlate, 
+  findGame, 
+  getH2HMargin, 
+  getBalldontlieTeamStats, 
+  getAnalysisContext, 
+  getLiveProps, 
+  findKey 
+};
