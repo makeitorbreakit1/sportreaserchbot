@@ -194,33 +194,39 @@ async function getLiveProps(sport, gameId) {
   if (sport !== 'nba' || !process.env.ODDS_API_KEY) return { props: { points: {}, rebounds: {}, assists: {} } };
   
   return cached(`props:${gameId}`, TTL.ODDS, async () => {
-    try {
-      const markets = 'player_points,player_rebounds,player_assists';
-      const url = `${ODDS_BASE}/sports/${SPORTS[sport].oddsKey}/events/${gameId}/odds/?apiKey=${encodeURIComponent(process.env.ODDS_API_KEY)}&regions=us&markets=${markets}&oddsFormat=american`;
-      const { data } = await guardedFetch('odds', url, { cost: 3 });
+    const props = { points: {}, rebounds: {}, assists: {} };
+    const statMarkets = [
+      { key: 'player_points', propKey: 'points' },
+      { key: 'player_rebounds', propKey: 'rebounds' },
+      { key: 'player_assists', propKey: 'assists' },
+    ];
 
-      const props = { points: {}, rebounds: {}, assists: {} };
+    for (const m of statMarkets) {
+      try {
+        const url = `${ODDS_BASE}/sports/${SPORTS[sport].oddsKey}/events/${gameId}/odds?apiKey=${encodeURIComponent(process.env.ODDS_API_KEY)}&regions=us&markets=${m.key}&oddsFormat=american&bookmakers=draftkings,fanduel,betmgm`;
+        const { data } = await guardedFetch('odds', url, { cost: 1 });
 
-      for (const book of data.bookmakers || []) {
-        for (const market of book.markets || []) {
-          const statKey = market.key === 'player_points' ? 'points' : market.key === 'player_rebounds' ? 'rebounds' : market.key === 'player_assists' ? 'assists' : null;
-          if (!statKey) continue;
+        for (const book of data?.bookmakers || []) {
+          for (const market of book.markets || []) {
+            if (market.key !== m.key) continue;
 
-          for (const outcome of market.outcomes || []) {
-            const pName = normName(outcome.description || outcome.name);
-            if (!props[statKey][pName]) {
-              props[statKey][pName] = { point: outcome.point, over: null, under: null, last10Scores: [] };
+            for (const outcome of market.outcomes || []) {
+              const pName = normName(outcome.description || outcome.name);
+              if (!props[m.propKey][pName]) {
+                props[m.propKey][pName] = { point: outcome.point, over: null, under: null, last10Scores: [] };
+              }
+              const priceObj = { american: outcome.price, dec: americanToDecimal(outcome.price), book: book.title };
+              if (outcome.name === 'Over') props[m.propKey][pName].over = priceObj;
+              if (outcome.name === 'Under') props[m.propKey][pName].under = priceObj;
             }
-            if (outcome.name === 'Over') props[statKey][pName].over = { american: outcome.price, dec: americanToDecimal(outcome.price), book: book.title };
-            if (outcome.name === 'Under') props[statKey][pName].under = { american: outcome.price, dec: americanToDecimal(outcome.price), book: book.title };
           }
         }
+      } catch (e) {
+        // Suppress HTTP 400 errors if specific prop market hasn't been posted yet for today's slate
       }
-      return { props };
-    } catch (e) {
-      console.warn('Live props fetch failed or no market posted yet:', e.message);
-      return { props: { points: {}, rebounds: {}, assists: {} } };
     }
+
+    return { props };
   }, { optional: true });
 }
 
