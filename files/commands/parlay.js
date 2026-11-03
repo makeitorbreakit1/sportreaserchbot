@@ -1,9 +1,27 @@
 'use strict';
 const { SlashCommandBuilder } = require('discord.js');
 const { startCooldown } = require('../cache/cacheManager');
-const { SPORTS, SPORT_CHOICES, getSlate, getAnalysisContext, getH2HMargin, getLiveProps } = require('../services/oddsService');
+const oddsService = require('../services/oddsService');
 const { analyzeGame, buildProps, buildDualParlays } = require('../services/analyticsEngine');
 const { lineupEmbed, errorEmbed, onCooldown, replyWithError } = require('./embeds');
+
+// Safe dynamic resolution for SPORT_CHOICES to prevent startup crashes
+const SPORT_CHOICES = Array.isArray(oddsService.SPORT_CHOICES) && oddsService.SPORT_CHOICES.length > 0
+  ? oddsService.SPORT_CHOICES
+  : [
+      { name: 'NBA', value: 'nba' },
+      { name: 'NFL', value: 'nfl' },
+      { name: 'NHL', value: 'nhl' },
+      { name: 'MLB', value: 'mlb' },
+      { name: 'Premier League', value: 'epl' },
+      { name: 'MLS', value: 'mls' },
+    ];
+
+const SPORTS = oddsService.SPORTS || {};
+const getSlate = oddsService.getSlate;
+const getAnalysisContext = oddsService.getAnalysisContext;
+const getH2HMargin = oddsService.getH2HMargin;
+const getLiveProps = oddsService.getLiveProps;
 
 module.exports = {
   data: new SlashCommandBuilder()
@@ -28,8 +46,9 @@ module.exports = {
 
       const slate = await getSlate(sport);
       if (!slate.games || !slate.games.length) {
+        const sportLabel = SPORTS[sport]?.label || sport;
         return void await interaction.editReply({ 
-          embeds: [errorEmbed('No games found', `No active ${SPORTS[sport]?.label || sport} games available for parlay calculation right now.`)] 
+          embeds: [errorEmbed('No games found', `No active ${sportLabel} games available for parlay calculation right now.`)] 
         });
       }
 
@@ -60,7 +79,8 @@ module.exports = {
       }
 
       const meta = { stale: slate.stale || ctx.stale, blocked: slate.blocked || ctx.blocked, missing: ctx.missing };
-      const embed = lineupEmbed(SPORTS[sport].label, parlays, legsN, mode, meta);
+      const sportLabel = SPORTS[sport]?.label || sport;
+      const embed = lineupEmbed(sportLabel, parlays, legsN, mode, meta);
 
       await interaction.editReply({ embeds: [embed] });
       startCooldown(interaction.user.id);
