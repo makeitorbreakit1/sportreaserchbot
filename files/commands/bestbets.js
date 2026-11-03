@@ -1,25 +1,9 @@
 'use strict';
 const { SlashCommandBuilder } = require('discord.js');
 const { startCooldown } = require('../cache/cacheManager');
-const oddsService = require('../services/oddsService');
+const { SPORTS, SPORT_CHOICES, getSlate, getAnalysisContext } = require('../services/oddsService');
 const { analyzeGame, pickBestBets } = require('../services/analyticsEngine');
 const { bestBetsEmbed, errorEmbed, onCooldown, replyWithError } = require('./embeds');
-
-// Safe dynamic resolution for SPORT_CHOICES to prevent startup crashes
-const SPORT_CHOICES = Array.isArray(oddsService.SPORT_CHOICES) && oddsService.SPORT_CHOICES.length > 0
-  ? oddsService.SPORT_CHOICES
-  : [
-      { name: 'NBA', value: 'nba' },
-      { name: 'NFL', value: 'nfl' },
-      { name: 'NHL', value: 'nhl' },
-      { name: 'MLB', value: 'mlb' },
-      { name: 'Premier League', value: 'epl' },
-      { name: 'MLS', value: 'mls' },
-    ];
-
-const SPORTS = oddsService.SPORTS || {};
-const getSlate = oddsService.getSlate;
-const getAnalysisContext = oddsService.getAnalysisContext;
 
 module.exports = {
   data: new SlashCommandBuilder()
