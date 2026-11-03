@@ -1,9 +1,29 @@
 'use strict';
 const { SlashCommandBuilder } = require('discord.js');
 const { startCooldown, HARD_LIMIT_MESSAGE } = require('../cache/cacheManager');
-const { SPORTS, SPORT_CHOICES, getSlate, findGame, getAnalysisContext, getH2HMargin, getLiveProps } = require('../services/oddsService');
+const oddsService = require('../services/oddsService');
 const { analyzeGame, buildProps } = require('../services/analyticsEngine');
 const { analyzeEmbed, errorEmbed, onCooldown, replyWithError } = require('./embeds');
+
+// Extract properties safely with fallback to prevent circular-import crashes at registration time
+const SPORTS = oddsService.SPORTS || {};
+const getSlate = oddsService.getSlate;
+const findGame = oddsService.findGame;
+const getAnalysisContext = oddsService.getAnalysisContext;
+const getH2HMargin = oddsService.getH2HMargin;
+const getLiveProps = oddsService.getLiveProps;
+
+// Safe dynamic resolution for SPORT_CHOICES
+const SPORT_CHOICES = Array.isArray(oddsService.SPORT_CHOICES) && oddsService.SPORT_CHOICES.length > 0
+  ? oddsService.SPORT_CHOICES
+  : [
+      { name: 'NBA', value: 'nba' },
+      { name: 'NFL', value: 'nfl' },
+      { name: 'NHL', value: 'nhl' },
+      { name: 'MLB', value: 'mlb' },
+      { name: 'Premier League', value: 'epl' },
+      { name: 'MLS', value: 'mls' },
+    ];
 
 module.exports = {
   data: new SlashCommandBuilder()
@@ -27,7 +47,7 @@ module.exports = {
       const game = findGame(slate.games, teamA, teamB);
       if (!game) {
         return void await interaction.editReply({ embeds: [errorEmbed('No matching game',
-          `No ${SPORTS[sport].label} game between **${teamA}** and **${teamB}** in the next ${SPORTS[sport].windowHours}h odds window. ` +
+          `No ${SPORTS[sport]?.label || sport.toUpperCase()} game between **${teamA}** and **${teamB}** in the next ${SPORTS[sport]?.windowHours || 36}h odds window. ` +
           'Check spelling (nicknames work, e.g. "Celtics") or try `/bestbets` to see what is scheduled.')] });
       }
 
