@@ -14,6 +14,10 @@ const SPORT_CFG = {
          injuryCap: 1.0, injuryDefault: 0.08, injuryPos: { G: 0.45, C: 0.15, W: 0.1, LW: 0.1, RW: 0.1, D: 0.09 } },
   mlb: { homeAdv: 0.25, sd: 4.4, totalSd: 3.2, shrinkK: 45, winPctToMargin: 8, formScale: 1.2, formCap: 0.5, h2hWeight: 0.04, h2hCap: 0.2,
          injuryCap: 1.2, injuryDefault: 0.08, injuryPos: { SP: 0.5, P: 0.12, RP: 0.05, C: 0.12 } },
+  epl: { homeAdv: 0.35, sd: 1.2, totalSd: 1.3, shrinkK: 10, winPctToMargin: 6, formScale: 1.0, formCap: 0.4, h2hWeight: 0.04, h2hCap: 0.2,
+         injuryCap: 1.0, injuryDefault: 0.05, injuryPos: {} },
+  mls: { homeAdv: 0.40, sd: 1.3, totalSd: 1.4, shrinkK: 10, winPctToMargin: 6, formScale: 1.0, formCap: 0.4, h2hWeight: 0.04, h2hCap: 0.2,
+         injuryCap: 1.0, injuryDefault: 0.05, injuryPos: {} },
 };
 
 const MIN_EV = 0.01;
