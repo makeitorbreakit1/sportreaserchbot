@@ -20,6 +20,8 @@ const SPORT_CFG = {
          injuryCap: 1.0, injuryDefault: 0.05, injuryPos: {} },
   uefa: { homeAdv: 0.35, sd: 1.2, totalSd: 1.3, shrinkK: 10, winPctToMargin: 6, formScale: 1.0, formCap: 0.4, h2hWeight: 0.04, h2hCap: 0.2,
           injuryCap: 1.0, injuryDefault: 0.05, injuryPos: {} },
+  laliga: { homeAdv: 0.35, sd: 1.2, totalSd: 1.3, shrinkK: 10, winPctToMargin: 6, formScale: 1.0, formCap: 0.4, h2hWeight: 0.04, h2hCap: 0.2,
+            injuryCap: 1.0, injuryDefault: 0.05, injuryPos: {} },
 };
 
 const MIN_EV = 0.01;
