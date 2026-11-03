@@ -1,9 +1,25 @@
 'use strict';
 const { SlashCommandBuilder } = require('discord.js');
 const { startCooldown } = require('../cache/cacheManager');
-const { SPORTS, SPORT_CHOICES, getSlate, getAnalysisContext } = require('../services/oddsService');
+const oddsService = require('../services/oddsService');
 const { analyzeGame, pickBestBets } = require('../services/analyticsEngine');
 const { bestBetsEmbed, errorEmbed, onCooldown, replyWithError } = require('./embeds');
+
+// Bulletproof fallback: Guarantees SPORT_CHOICES is ALWAYS an array, never undefined
+const SPORT_CHOICES = Array.isArray(oddsService?.SPORT_CHOICES) && oddsService.SPORT_CHOICES.length > 0
+  ? oddsService.SPORT_CHOICES
+  : [
+      { name: 'NBA', value: 'nba' },
+      { name: 'NFL', value: 'nfl' },
+      { name: 'NHL', value: 'nhl' },
+      { name: 'MLB', value: 'mlb' },
+      { name: 'Premier League', value: 'epl' },
+      { name: 'MLS', value: 'mls' },
+    ];
+
+const SPORTS = oddsService?.SPORTS || {};
+const getSlate = oddsService?.getSlate;
+const getAnalysisContext = oddsService?.getAnalysisContext;
 
 module.exports = {
   data: new SlashCommandBuilder()
@@ -16,8 +32,12 @@ module.exports = {
     await interaction.deferReply();
     try {
       const sport = interaction.options.getString('sport', true);
+      if (!getSlate) {
+        throw new Error('oddsService failed to load getSlate function properly.');
+      }
+      
       const slate = await getSlate(sport);
-      if (!slate.games.length) {
+      if (!slate || !slate.games || !slate.games.length) {
         const sportLabel = SPORTS[sport]?.label || sport.toUpperCase();
         const windowHours = SPORTS[sport]?.windowHours || 36;
         return void await interaction.editReply({ embeds: [errorEmbed(`No ${sportLabel} games`,
