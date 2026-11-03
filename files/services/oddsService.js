@@ -1,6 +1,6 @@
 'use strict';
 
-// Define your sports configuration object with exact Odds API keys
+// Define your sports configuration object with proper Odds API keys
 const SPORTS = {
   nba: { label: 'NBA', key: 'basketball_nba', windowHours: 36 },
   nfl: { label: 'NFL', key: 'americanfootball_nfl', windowHours: 72 },
@@ -9,6 +9,7 @@ const SPORTS = {
   epl: { label: 'Premier League', key: 'soccer_epl', windowHours: 72 },
   mls: { label: 'MLS', key: 'soccer_usa_mls', windowHours: 72 },
   uefa: { label: 'UEFA Champions League', key: 'soccer_uefa_champs_league', windowHours: 72 },
+  laliga: { label: 'La Liga', key: 'soccer_spain_la_liga', windowHours: 72 },
 };
 
 const SPORT_CHOICES = [
@@ -18,7 +19,8 @@ const SPORT_CHOICES = [
   { name: 'MLB', value: 'mlb' },
   { name: 'Premier League', value: 'epl' },
   { name: 'MLS', value: 'mls' },
-  { name: 'UEFA', value: 'uefa' },
+  { name: 'UEFA Champions League', value: 'uefa' },
+  { name: 'La Liga', value: 'laliga' },
 ];
 
 async function getSlate(sport) {
