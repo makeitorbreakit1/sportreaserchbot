@@ -11,31 +11,28 @@ const fs = require('fs');
 const path = require('path');
 
 // ───────────────────────── HARD CAPS (units = API credits) ─────────────────────────
-// The Odds API bills 1 credit per market per region: h2h+spreads (US) = 2 credits per call.
 const MAX_DAILY_API_CALLS = 12;
-const MAX_MONTHLY_API_CALLS = 380; // free plan = 500 credits/month; 120 kept in reserve
+const MAX_MONTHLY_API_CALLS = 380;
 
-// Env vars may only LOWER a cap, never raise it above the hard-coded constant.
 const lowerOnly = (name, hard) => {
   const v = Number(process.env[name]);
   return Number.isFinite(v) && v > 0 ? Math.min(v, hard) : hard;
 };
 const LIMITS = Object.freeze({
   odds: Object.freeze({ daily: lowerOnly('MAX_DAILY_API_CALLS', MAX_DAILY_API_CALLS), monthly: lowerOnly('MAX_MONTHLY_API_CALLS', MAX_MONTHLY_API_CALLS) }),
-  espn: Object.freeze({ daily: 60, monthly: 1500 }),      // public/unmetered, capped anyway
+  espn: Object.freeze({ daily: 60, monthly: 1500 }),
   sportsdb: Object.freeze({ daily: 25, monthly: 500 }),
 });
 
 const HARD_LIMIT_MESSAGE = '⚠️ Daily API Hard Limit Reached to prevent overages. Serving cached/historical estimates only.';
 
-// Cache lifetimes (seconds)
 const TTL = Object.freeze({
-  ODDS: 60 * 60,            // moneylines & spreads: 60 min
+  ODDS: 60 * 60,            // 60 min
   PROPS: 45 * 60,
-  STANDINGS: 12 * 60 * 60,  // standings / form: 12 h
-  H2H: 24 * 60 * 60,        // head-to-head: 24 h
-  INJURIES: 3 * 60 * 60,    // injuries: 3 h
-  SCOREBOARD: 2 * 60 * 60,  // slate, leaders, weather: 2 h
+  STANDINGS: 12 * 60 * 60,  // 12 h
+  H2H: 24 * 60 * 60,        // 24 h
+  INJURIES: 3 * 60 * 60,    // 3 h
+  SCOREBOARD: 2 * 60 * 60,  // 2 h
 });
 
 // ───────────────────────── Usage tracker ─────────────────────────
@@ -45,8 +42,22 @@ const freshState = () => ({ day: utcDay(), month: utcDay().slice(0, 7), usage: {
 
 function loadState() {
   try {
+    if (!fs.existsSync(STATE_FILE)) return freshState();
     const s = JSON.parse(fs.readFileSync(STATE_FILE, 'utf8'));
-    return s && s.usage ? s : freshState();
+    if (!s || !s.usage) return freshState();
+    
+    // Safety check: if saved state day is outdated on load, rollover immediately
+    const currentDay = utcDay();
+    const currentMonth = currentDay.slice(0, 7);
+    if (s.day !== currentDay) {
+      s.day = currentDay;
+      Object.values(s.usage).forEach(u => { u.d = 0; });
+    }
+    if (s.month !== currentMonth) {
+      s.month = currentMonth;
+      Object.values(s.usage).forEach(u => { u.m = 0; u.d = 0; });
+    }
+    return s;
   } catch { return freshState(); }
 }
 let state = loadState();
@@ -55,13 +66,25 @@ function persist() {
   try {
     fs.mkdirSync(path.dirname(STATE_FILE), { recursive: true });
     fs.writeFileSync(STATE_FILE, JSON.stringify(state));
-  } catch { /* non-fatal: counters keep working in memory */ }
+  } catch { /* non-fatal */ }
 }
+
 function rollover() {
   const d = utcDay();
-  if (state.day !== d) { state.day = d; Object.values(state.usage).forEach(u => { u.d = 0; }); }
   const m = d.slice(0, 7);
-  if (state.month !== m) { state.month = m; Object.values(state.usage).forEach(u => { u.m = 0; u.d = 0; }); }
+  let changed = false;
+
+  if (state.day !== d) {
+    state.day = d;
+    Object.values(state.usage).forEach(u => { u.d = 0; });
+    changed = true;
+  }
+  if (state.month !== m) {
+    state.month = m;
+    Object.values(state.usage).forEach(u => { u.m = 0; u.d = 0; });
+    changed = true;
+  }
+  if (changed) persist();
 }
 const slot = p => state.usage[p] || (state.usage[p] = { d: 0, m: 0 });
 
@@ -70,11 +93,10 @@ class ApiHardLimitError extends Error {
     super(HARD_LIMIT_MESSAGE);
     this.name = 'ApiHardLimitError';
     this.provider = provider;
-    this.scope = scope; // 'daily' | 'monthly'
+    this.scope = scope; 
   }
 }
 
-/** Check + reserve quota atomically (JS is single-threaded). Counts the request even if it later fails. */
 function reserve(provider, cost = 1) {
   rollover();
   const lim = LIMITS[provider];
@@ -85,25 +107,27 @@ function reserve(provider, cost = 1) {
   u.d += cost; u.m += cost;
   persist();
 }
+
 function canAfford(provider, cost = 1) {
   rollover();
   const lim = LIMITS[provider], u = slot(provider);
   return u.d + cost <= lim.daily && u.m + cost <= lim.monthly;
 }
-/** The Odds API reports account-wide usage in response headers; never let our counter fall behind it. */
+
 function syncProviderUsage(provider, monthlyUsed) {
   const u = slot(provider);
   if (Number.isFinite(monthlyUsed) && monthlyUsed > u.m) { u.m = monthlyUsed; persist(); }
 }
+
 function usageSnapshot(provider = 'odds') {
   rollover();
   const u = slot(provider), lim = LIMITS[provider];
   return { daily: { used: u.d, limit: lim.daily }, monthly: { used: u.m, limit: lim.monthly } };
 }
 
-/** The single outbound-network choke point. Throws ApiHardLimitError before firing if over cap. */
 async function guardedFetch(provider, url, { cost = 1, headers = {}, timeoutMs = 10000 } = {}) {
-  reserve(provider, cost); // ← HARD STOP: nothing below runs if the cap is met
+  rollover(); // Ensure day check runs before reserving
+  reserve(provider, cost);
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), timeoutMs);
   try {
@@ -123,15 +147,10 @@ async function guardedFetch(provider, url, { cost = 1, headers = {}, timeoutMs =
 
 // ───────────────────────── TTL cache ─────────────────────────
 const store = new NodeCache({ checkperiod: 300, useClones: false });
-const lastGood = new Map();   // never expires: powers "serving cached estimates" fallback
-const inflight = new Map();   // de-dupes concurrent identical requests
+const lastGood = new Map();   
+const inflight = new Map();   
 const LAST_GOOD_MAX = 150;
 
-/**
- * cached(key, ttl, loader, {optional})
- * → { value, stale, blocked }. On loader failure / hard-stop it falls back to last known good data.
- * If there is none: optional=true resolves {value:null}; otherwise the error is rethrown.
- */
 async function cached(key, ttlSeconds, loader, { optional = false } = {}) {
   const hit = store.get(key);
   if (hit !== undefined) return { value: hit, stale: false, blocked: false };
