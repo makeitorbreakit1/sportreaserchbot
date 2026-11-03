@@ -1,9 +1,25 @@
 'use strict';
 const { SlashCommandBuilder } = require('discord.js');
 const { startCooldown } = require('../cache/cacheManager');
-const { SPORTS, SPORT_CHOICES, getSlate, getAnalysisContext } = require('../services/oddsService');
+const oddsService = require('../services/oddsService');
 const { analyzeGame, pickBestBets } = require('../services/analyticsEngine');
 const { bestBetsEmbed, errorEmbed, onCooldown, replyWithError } = require('./embeds');
+
+// Safe dynamic resolution for SPORT_CHOICES to prevent startup crashes
+const SPORT_CHOICES = Array.isArray(oddsService.SPORT_CHOICES) && oddsService.SPORT_CHOICES.length > 0
+  ? oddsService.SPORT_CHOICES
+  : [
+      { name: 'NBA', value: 'nba' },
+      { name: 'NFL', value: 'nfl' },
+      { name: 'NHL', value: 'nhl' },
+      { name: 'MLB', value: 'mlb' },
+      { name: 'Premier League', value: 'epl' },
+      { name: 'MLS', value: 'mls' },
+    ];
+
+const SPORTS = oddsService.SPORTS || {};
+const getSlate = oddsService.getSlate;
+const getAnalysisContext = oddsService.getAnalysisContext;
 
 module.exports = {
   data: new SlashCommandBuilder()
@@ -18,8 +34,10 @@ module.exports = {
       const sport = interaction.options.getString('sport', true);
       const slate = await getSlate(sport);
       if (!slate.games.length) {
-        return void await interaction.editReply({ embeds: [errorEmbed(`No ${SPORTS[sport].label} games`,
-          `Nothing on the odds board in the next ${SPORTS[sport].windowHours}h (off-day or off-season).`)] });
+        const sportLabel = SPORTS[sport]?.label || sport.toUpperCase();
+        const windowHours = SPORTS[sport]?.windowHours || 36;
+        return void await interaction.editReply({ embeds: [errorEmbed(`No ${sportLabel} games`,
+          `Nothing on the odds board in the next ${windowHours}h (off-day or off-season).`)] });
       }
       const ctx = await getAnalysisContext(sport);
       const analyses = slate.games.map(g => analyzeGame(sport, g, ctx));
@@ -28,7 +46,8 @@ module.exports = {
       const bets = pickBestBets(analyses, 5).filter(b => Math.abs(b.pModel - b.pMkt) <= 0.20);
 
       const meta = { stale: slate.stale || ctx.stale, blocked: slate.blocked || ctx.blocked, missing: ctx.missing };
-      await interaction.editReply({ embeds: [bestBetsEmbed(SPORTS[sport].label, bets, slate.games.length, meta)] });
+      const sportLabel = SPORTS[sport]?.label || sport.toUpperCase();
+      await interaction.editReply({ embeds: [bestBetsEmbed(sportLabel, bets, slate.games.length, meta)] });
       startCooldown(interaction.user.id);
     } catch (err) {
       await replyWithError(interaction, err);
