@@ -1,11 +1,19 @@
 'use strict';
 const { SlashCommandBuilder } = require('discord.js');
 const { startCooldown } = require('../cache/cacheManager');
-const oddsService = require('../services/oddsService');
+
+// Diagnostic wrapper to catch why oddsService fails to load
+let oddsService;
+try {
+  oddsService = require('../services/oddsService');
+  console.log('[DEBUG] oddsService loaded successfully. Keys available:', Object.keys(oddsService));
+} catch (loadErr) {
+  console.error('[CRITICAL] Failed to require ../services/oddsService:', loadErr);
+}
+
 const { analyzeGame, pickBestBets } = require('../services/analyticsEngine');
 const { bestBetsEmbed, errorEmbed, onCooldown, replyWithError } = require('./embeds');
 
-// Bulletproof fallback: Guarantees SPORT_CHOICES is ALWAYS an array, never undefined
 const SPORT_CHOICES = Array.isArray(oddsService?.SPORT_CHOICES) && oddsService.SPORT_CHOICES.length > 0
   ? oddsService.SPORT_CHOICES
   : [
@@ -29,13 +37,12 @@ module.exports = {
     try {
       const sport = interaction.options.getString('sport', true);
       
-      // Resolve functions dynamically inside execute to completely avoid load-order timing issues
       const getSlate = oddsService?.getSlate;
       const getAnalysisContext = oddsService?.getAnalysisContext;
       const SPORTS = oddsService?.SPORTS || {};
 
       if (typeof getSlate !== 'function') {
-        throw new Error('oddsService failed to load getSlate function properly.');
+        throw new Error(`oddsService.getSlate is ${typeof getSlate}. Check your console logs above for the underlying error in oddsService.js.`);
       }
       
       const slate = await getSlate(sport);
@@ -49,7 +56,6 @@ module.exports = {
       const ctx = typeof getAnalysisContext === 'function' ? await getAnalysisContext(sport) : {};
       const analyses = slate.games.map(g => analyzeGame(sport, g, ctx));
       
-      // Filter out any bets failing the market discrepancy / injury sanity guard
       const bets = pickBestBets(analyses, 5).filter(b => Math.abs(b.pModel - b.pMkt) <= 0.20);
 
       const meta = { stale: slate.stale || ctx.stale, blocked: slate.blocked || ctx.blocked, missing: ctx.missing };
