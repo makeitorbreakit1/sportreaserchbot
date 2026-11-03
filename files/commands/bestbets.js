@@ -17,10 +17,6 @@ const SPORT_CHOICES = Array.isArray(oddsService?.SPORT_CHOICES) && oddsService.S
       { name: 'MLS', value: 'mls' },
     ];
 
-const SPORTS = oddsService?.SPORTS || {};
-const getSlate = oddsService?.getSlate;
-const getAnalysisContext = oddsService?.getAnalysisContext;
-
 module.exports = {
   data: new SlashCommandBuilder()
     .setName('bestbets')
@@ -32,7 +28,13 @@ module.exports = {
     await interaction.deferReply();
     try {
       const sport = interaction.options.getString('sport', true);
-      if (!getSlate) {
+      
+      // Resolve functions dynamically inside execute to completely avoid load-order timing issues
+      const getSlate = oddsService?.getSlate;
+      const getAnalysisContext = oddsService?.getAnalysisContext;
+      const SPORTS = oddsService?.SPORTS || {};
+
+      if (typeof getSlate !== 'function') {
         throw new Error('oddsService failed to load getSlate function properly.');
       }
       
@@ -43,7 +45,8 @@ module.exports = {
         return void await interaction.editReply({ embeds: [errorEmbed(`No ${sportLabel} games`,
           `Nothing on the odds board in the next ${windowHours}h (off-day or off-season).`)] });
       }
-      const ctx = await getAnalysisContext(sport);
+      
+      const ctx = typeof getAnalysisContext === 'function' ? await getAnalysisContext(sport) : {};
       const analyses = slate.games.map(g => analyzeGame(sport, g, ctx));
       
       // Filter out any bets failing the market discrepancy / injury sanity guard
