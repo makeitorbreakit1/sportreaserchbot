@@ -8,6 +8,7 @@ const SPORTS = {
   mlb: { label: 'MLB', windowHours: 36 },
   epl: { label: 'Premier League', windowHours: 48 },
   mls: { label: 'MLS', windowHours: 48 },
+  uefa: { label: 'UEFA', windowHours: 48 },
 };
 
 const SPORT_CHOICES = [
@@ -17,6 +18,7 @@ const SPORT_CHOICES = [
   { name: 'MLB', value: 'mlb' },
   { name: 'Premier League', value: 'epl' },
   { name: 'MLS', value: 'mls' },
+  { name: 'UEFA', value: 'uefa' },
 ];
 
 async function getSlate(sport) {
