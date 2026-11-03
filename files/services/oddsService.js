@@ -1,14 +1,14 @@
 'use strict';
 
-// Define your sports configuration object with proper Odds API keys
+// Define your sports configuration object with exact Odds API keys
 const SPORTS = {
   nba: { label: 'NBA', key: 'basketball_nba', windowHours: 36 },
   nfl: { label: 'NFL', key: 'americanfootball_nfl', windowHours: 72 },
   nhl: { label: 'NHL', key: 'icehockey_nhl', windowHours: 36 },
   mlb: { label: 'MLB', key: 'baseball_mlb', windowHours: 36 },
-  epl: { label: 'Premier League', key: 'soccer_epl', windowHours: 48 },
-  mls: { label: 'MLS', key: 'soccer_usa_mls', windowHours: 48 },
-  uefa: { label: 'UEFA Champions League', key: 'soccer_uefa_champs_league', windowHours: 48 },
+  epl: { label: 'Premier League', key: 'soccer_epl', windowHours: 72 },
+  mls: { label: 'MLS', key: 'soccer_usa_mls', windowHours: 72 },
+  uefa: { label: 'UEFA Champions League', key: 'soccer_uefa_champs_league', windowHours: 72 },
 };
 
 const SPORT_CHOICES = [
@@ -22,11 +22,58 @@ const SPORT_CHOICES = [
 ];
 
 async function getSlate(sport) {
-  const sportKey = SPORTS[sport]?.key || sport;
-  // Use sportKey when fetching from the Odds API (e.g., https://api.the-odds-api.com/v4/sports/${sportKey}/odds/...)
-  
-  // Add your actual slate fetching logic here using sportKey
-  return { games: [], stale: false, blocked: false, missing: [] };
+  const cfg = SPORTS[sport] || { key: sport, windowHours: 72 };
+  const apiKey = process.env.ODDS_API_KEY;
+
+  if (!apiKey) {
+    console.error('[ODDS_SERVICE] Missing ODDS_API_KEY in environment variables.');
+    return { games: [], stale: false, blocked: true, missing: ['API_KEY'] };
+  }
+
+  try {
+    const url = `https://api.the-odds-api.com/v4/sports/${cfg.key}/odds/?apiKey=${apiKey}&regions=us&markets=h2h,spreads,totals&oddsFormat=american`;
+    const response = await fetch(url);
+    
+    if (!response.ok) {
+      console.error(`[ODDS_SERVICE] API error for ${sport}: ${response.status} ${response.statusText}`);
+      return { games: [], stale: true, blocked: false, missing: [sport] };
+    }
+
+    const rawGames = await response.json();
+    if (!Array.isArray(rawGames) || rawGames.length === 0) {
+      return { games: [], stale: false, blocked: false, missing: [] };
+    }
+
+    // Map response games to internal format
+    const games = rawGames.map(g => {
+      const h2hMarket = g.bookmakers?.[0]?.markets?.find(m => m.key === 'h2h');
+      const spreadMarket = g.bookmakers?.[0]?.markets?.find(m => m.key === 'spreads');
+      const totalMarket = g.bookmakers?.[0]?.markets?.find(m => m.key === 'totals');
+
+      const homeOutcome = h2hMarket?.outcomes?.find(o => o.name === g.home_team);
+      const awayOutcome = h2hMarket?.outcomes?.find(o => o.name === g.away_team);
+
+      return {
+        id: g.id,
+        home: g.home_team,
+        away: g.away_team,
+        commenceTime: g.commence_time,
+        ml: homeOutcome && awayOutcome ? {
+          home: { american: homeOutcome.price, dec: homeOutcome.price > 0 ? 1 + homeOutcome.price/100 : 1 + 100/Math.abs(homeOutcome.price), book: g.bookmakers[0].title },
+          away: { american: awayOutcome.price, dec: awayOutcome.price > 0 ? 1 + awayOutcome.price/100 : 1 + 100/Math.abs(awayOutcome.price), book: g.bookmakers[0].title },
+          fairHome: 0.5,
+          fairAway: 0.5
+        } : null,
+        spread: spreadMarket ? { point: spreadMarket.outcomes[0]?.point, home: spreadMarket.outcomes[0], away: spreadMarket.outcomes[1] } : null,
+        total: totalMarket ? { point: totalMarket.outcomes[0]?.point, over: totalMarket.outcomes.find(o => o.name === 'Over'), under: totalMarket.outcomes.find(o => o.name === 'Under') } : null
+      };
+    });
+
+    return { games, stale: false, blocked: false, missing: [] };
+  } catch (err) {
+    console.error(`[ODDS_SERVICE] Failed to fetch slate for ${sport}:`, err);
+    return { games: [], stale: true, blocked: false, missing: [sport] };
+  }
 }
 
 async function getAnalysisContext(sport) {
@@ -49,7 +96,6 @@ async function findKey() {
   return null;
 }
 
-// If you have custom odds service logic that processes bets/markets, put it here:
 function processOddsServiceLogic(analyses, propsByGame, legsN, mode = 'game') {
   const strongCands = [];
   const demonCands = [];
@@ -97,7 +143,6 @@ function processOddsServiceLogic(analyses, propsByGame, legsN, mode = 'game') {
   return { strongCands, demonCands };
 }
 
-// CRITICAL: This ensures module.exports is never empty and exposes everything cleanly
 module.exports = {
   SPORTS,
   SPORT_CHOICES,
