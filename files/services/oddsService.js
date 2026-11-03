@@ -1,14 +1,14 @@
 'use strict';
 
-// Define your sports configuration object
+// Define your sports configuration object with proper Odds API keys
 const SPORTS = {
-  nba: { label: 'NBA', windowHours: 36 },
-  nfl: { label: 'NFL', windowHours: 72 },
-  nhl: { label: 'NHL', windowHours: 36 },
-  mlb: { label: 'MLB', windowHours: 36 },
-  epl: { label: 'Premier League', windowHours: 48 },
-  mls: { label: 'MLS', windowHours: 48 },
-  uefa: { label: 'UEFA', windowHours: 48 },
+  nba: { label: 'NBA', key: 'basketball_nba', windowHours: 36 },
+  nfl: { label: 'NFL', key: 'americanfootball_nfl', windowHours: 72 },
+  nhl: { label: 'NHL', key: 'icehockey_nhl', windowHours: 36 },
+  mlb: { label: 'MLB', key: 'baseball_mlb', windowHours: 36 },
+  epl: { label: 'Premier League', key: 'soccer_epl', windowHours: 48 },
+  mls: { label: 'MLS', key: 'soccer_usa_mls', windowHours: 48 },
+  uefa: { label: 'UEFA Champions League', key: 'soccer_uefa_champs_league', windowHours: 48 },
 };
 
 const SPORT_CHOICES = [
@@ -22,7 +22,10 @@ const SPORT_CHOICES = [
 ];
 
 async function getSlate(sport) {
-  // Add your slate fetching logic here
+  const sportKey = SPORTS[sport]?.key || sport;
+  // Use sportKey when fetching from the Odds API (e.g., https://api.the-odds-api.com/v4/sports/${sportKey}/odds/...)
+  
+  // Add your actual slate fetching logic here using sportKey
   return { games: [], stale: false, blocked: false, missing: [] };
 }
 
