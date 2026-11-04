@@ -46,28 +46,51 @@ async function getSlate(sport) {
       return { games: [], stale: false, blocked: false, missing: [] };
     }
 
-    // Map response games to internal format
+    // Map response games to internal format with safety fallbacks
     const games = rawGames.map(g => {
-      const h2hMarket = g.bookmakers?.[0]?.markets?.find(m => m.key === 'h2h');
-      const spreadMarket = g.bookmakers?.[0]?.markets?.find(m => m.key === 'spreads');
-      const totalMarket = g.bookmakers?.[0]?.markets?.find(m => m.key === 'totals');
+      const homeName = g.home_team || g.home || 'Home Team';
+      const awayName = g.away_team || g.away || 'Away Team';
+      
+      const bookmaker = g.bookmakers?.[0];
+      const h2hMarket = bookmaker?.markets?.find(m => m.key === 'h2h');
+      const spreadMarket = bookmaker?.markets?.find(m => m.key === 'spreads');
+      const totalMarket = bookmaker?.markets?.find(m => m.key === 'totals');
 
-      const homeOutcome = h2hMarket?.outcomes?.find(o => o.name === g.home_team);
-      const awayOutcome = h2hMarket?.outcomes?.find(o => o.name === g.away_team);
+      const homeOutcome = h2hMarket?.outcomes?.find(o => o.name === homeName);
+      const awayOutcome = h2hMarket?.outcomes?.find(o => o.name === awayName);
+
+      const homePrice = homeOutcome?.price;
+      const awayPrice = awayOutcome?.price;
 
       return {
         id: g.id,
-        home: g.home_team,
-        away: g.away_team,
-        commenceTime: g.commence_time,
-        ml: homeOutcome && awayOutcome ? {
-          home: { american: homeOutcome.price, dec: homeOutcome.price > 0 ? 1 + homeOutcome.price/100 : 1 + 100/Math.abs(homeOutcome.price), book: g.bookmakers[0].title },
-          away: { american: awayOutcome.price, dec: awayOutcome.price > 0 ? 1 + awayOutcome.price/100 : 1 + 100/Math.abs(awayOutcome.price), book: g.bookmakers[0].title },
+        home: homeName,
+        away: awayName,
+        commenceTime: g.commence_time || g.commenceTime || new Date().toISOString(),
+        ml: (homePrice != null && awayPrice != null) ? {
+          home: { 
+            american: homePrice, 
+            dec: homePrice > 0 ? 1 + homePrice / 100 : 1 + 100 / Math.abs(homePrice), 
+            book: bookmaker?.title || 'Consensus' 
+          },
+          away: { 
+            american: awayPrice, 
+            dec: awayPrice > 0 ? 1 + awayPrice / 100 : 1 + 100 / Math.abs(awayPrice), 
+            book: bookmaker?.title || 'Consensus' 
+          },
           fairHome: 0.5,
           fairAway: 0.5
         } : null,
-        spread: spreadMarket ? { point: spreadMarket.outcomes[0]?.point, home: spreadMarket.outcomes[0], away: spreadMarket.outcomes[1] } : null,
-        total: totalMarket ? { point: totalMarket.outcomes[0]?.point, over: totalMarket.outcomes.find(o => o.name === 'Over'), under: totalMarket.outcomes.find(o => o.name === 'Under') } : null
+        spread: spreadMarket ? { 
+          point: spreadMarket.outcomes[0]?.point ?? 0, 
+          home: spreadMarket.outcomes.find(o => o.name === homeName) || spreadMarket.outcomes[0], 
+          away: spreadMarket.outcomes.find(o => o.name === awayName) || spreadMarket.outcomes[1] 
+        } : null,
+        total: totalMarket ? { 
+          point: totalMarket.outcomes[0]?.point ?? 0, 
+          over: totalMarket.outcomes.find(o => o.name === 'Over'), 
+          under: totalMarket.outcomes.find(o => o.name === 'Under') 
+        } : null
       };
     });
 
