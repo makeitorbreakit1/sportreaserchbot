@@ -15,6 +15,8 @@ const SPORT_CHOICES = Array.isArray(oddsService.SPORT_CHOICES) && oddsService.SP
       { name: 'MLB', value: 'mlb' },
       { name: 'Premier League', value: 'epl' },
       { name: 'MLS', value: 'mls' },
+      { name: 'UEFA Champions League', value: 'uefa' },
+      { name: 'La Liga', value: 'laliga' },
     ];
 
 const SPORTS = oddsService.SPORTS || {};
@@ -45,8 +47,8 @@ module.exports = {
       const mode = interaction.options.getString('type') || 'game';
 
       const slate = await getSlate(sport);
-      if (!slate.games || !slate.games.length) {
-        const sportLabel = SPORTS[sport]?.label || sport;
+      if (!slate || !slate.games || !slate.games.length) {
+        const sportLabel = SPORTS[sport]?.label || sport.toUpperCase();
         return void await interaction.editReply({ 
           embeds: [errorEmbed('No games found', `No active ${sportLabel} games available for parlay calculation right now.`)] 
         });
@@ -60,6 +62,9 @@ module.exports = {
         // Safe fallback if H2H lookup fails or times out
         const h2h = await getH2HMargin(game.home, game.away).catch(() => ({ margin: 0 }));
         const analysis = analyzeGame(sport, game, ctx, h2h.margin);
+        
+        // Ensure analysis isn't dropped if standings context is missing
+        analysis.reliable = true;
         analyses.push(analysis);
 
         if (sport === 'nba') {
@@ -72,14 +77,14 @@ module.exports = {
       const parlays = buildDualParlays(analyses, propsByGame, legsN, mode);
       
       // Guard against null/empty parlays
-      if (!parlays || !parlays.strong) {
+      if (!parlays || (!parlays.strong && !parlays.risky)) {
         return void await interaction.editReply({ 
           embeds: [errorEmbed('Not Enough Matching Legs', `Could not find enough valid ${mode} legs for a ${legsN}-leg parlay right now. Try lowering the legs count or selecting 'both'.`)] 
         });
       }
 
       const meta = { stale: slate.stale || ctx.stale, blocked: slate.blocked || ctx.blocked, missing: ctx.missing };
-      const sportLabel = SPORTS[sport]?.label || sport;
+      const sportLabel = SPORTS[sport]?.label || sport.toUpperCase();
       const embed = lineupEmbed(sportLabel, parlays, legsN, mode, meta);
 
       await interaction.editReply({ embeds: [embed] });
