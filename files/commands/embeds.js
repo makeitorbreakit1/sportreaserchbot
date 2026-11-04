@@ -7,15 +7,23 @@ const NOTE = 'Educational analytics, not financial advice. 21+. Problem gambling
 const pct = (p, d = 1) => `${(p * 100).toFixed(d)}%`;
 const probBar = (p, size = 10) => { const f = Math.round(Math.min(1, Math.max(0, p)) * size); return '▰'.repeat(f) + '▱'.repeat(size - f); };
 const evText = ev => `${ev >= 0 ? '+' : ''}${(ev * 100).toFixed(1)}%`;
-const unix = iso => Math.floor(Date.parse(iso) / 1000);
+
+// Safe UNIX timestamp helper that handles ISO strings, UNIX numbers, or undefined values gracefully
+const unix = rawDate => {
+  if (!rawDate) return Math.floor(Date.now() / 1000);
+  const parsed = Date.parse(rawDate);
+  return isNaN(parsed) ? Math.floor(Date.now() / 1000) : Math.floor(parsed / 1000);
+};
+
 const mmss = s => `${Math.floor(s / 60)}m ${String(s % 60).padStart(2, '0')}s`;
-const trim = (s, n = 1000) => (s.length > n ? s.slice(0, n - 1) + '…' : s);
+const trim = (s, n = 1000) => (s && s.length > n ? s.slice(0, n - 1) + '…' : s || '');
 
 function base(color) {
   const u = usageSnapshot('odds');
   return new EmbedBuilder().setColor(color).setTimestamp()
     .setFooter({ text: `Odds credits: ${u.daily.used}/${u.daily.limit} today · ${u.monthly.used}/${u.monthly.limit} this month\n${NOTE}` });
 }
+
 function banner(meta = {}) {
   const lines = [];
   if (meta.blocked) lines.push(HARD_LIMIT_MESSAGE);
@@ -52,25 +60,32 @@ async function replyWithError(interaction, err) {
 
 const injLine = it => `${it.weight >= 0.85 ? '🔴' : it.weight >= 0.3 ? '🟠' : '🟡'} ${it.name}${it.pos ? ` (${it.pos})` : ''} — ${it.status || 'Listed'} · −${it.impact.toFixed(2)}`;
 
-function analyzeEmbed(a, props, meta) {
-  const best = [...a.bets].sort((x, y) => y.ev - x.ev)[0];
+function analyzeEmbed(a, props = [], meta = {}) {
+  const homeName = a.home?.name || a.game?.home || 'Home Team';
+  const awayName = a.away?.name || a.game?.away || 'Away Team';
+  const commence = a.game?.commenceTime || a.game?.commence_time || a.game?.commence;
+
+  const best = [...(a.bets || [])].sort((x, y) => y.ev - x.ev)[0];
   const tier = best ? confidenceTier(best.ev, best.p) : confidenceTier(0, 0.5);
   const unit = a.sport === 'nhl' ? 'goals' : a.sport === 'mlb' ? 'runs' : 'pts';
-  const e = base(tier.color).setTitle(`🏟️ ${a.game.away} @ ${a.game.home}`);
-  const fav = a.projMargin >= 0 ? a.game.home : a.game.away;
-  let desc = banner(meta) + `Starts <t:${unix(a.game.commence)}:F>\nModel projection: **${fav} by ${Math.abs(a.projMargin).toFixed(1)} ${unit}**`;
+  const e = base(tier.color).setTitle(`🏟️ ${awayName} @ ${homeName}`);
+  const fav = (a.projMargin >= 0) ? homeName : awayName;
+  
+  let desc = banner(meta) + `Starts <t:${unix(commence)}:F>\nModel projection: **${fav} by ${Math.abs(a.projMargin || 0).toFixed(1)} ${unit}**`;
   if (!a.reliable) desc += '\n⚠️ Missing standings data for one team. Probabilities below are NOT reliable.';
   e.setDescription(desc);
 
-  const ml = a.bets.filter(b => b.type === 'ML');
+  const ml = (a.bets || []).filter(b => b.type === 'ML');
   if (ml.length) {
-    const [h, w] = [ml.find(b => b.side === 'home'), ml.find(b => b.side === 'away')];
+    const h = ml.find(b => b.side === 'home') || ml[0];
+    const w = ml.find(b => b.side === 'away') || ml[1] || ml[0];
     e.addFields({ name: '📈 Win probability (blended)', value: trim(
-      `**${a.game.home}** ${probBar(h.p)} ${pct(h.p)}\n**${a.game.away}** ${probBar(w.p)} ${pct(w.p)}\n` +
+      `**${homeName}** ${probBar(h.p)} ${pct(h.p)}\n**${awayName}** ${probBar(w.p)} ${pct(w.p)}\n` +
       `Home: model ${pct(h.pModel)} · market ${pct(h.pMkt)} · blend ${pct(h.p)}\n` +
       ml.map(b => `${b.team}: ${fmtAmerican(b.american)} @ ${b.book} → EV ${evText(b.ev)}`).join('\n')) });
   }
-  const sp = a.bets.filter(b => b.type === 'SPREAD');
+
+  const sp = (a.bets || []).filter(b => b.type === 'SPREAD');
   if (sp.length) {
     const s = [...sp].sort((x, y) => y.ev - x.ev)[0];
     e.addFields({ name: '🎯 Spread recommendation', value: trim(
@@ -79,10 +94,10 @@ function analyzeEmbed(a, props, meta) {
       `EV ${evText(s.ev)} · ${s.ev >= MIN_EV ? `¼-Kelly ${pct(s.kelly, 2)} of bankroll` : 'no edge: pass'}`) });
   }
 
-  const tot = a.bets.filter(b => b.type === 'TOTAL');
+  const tot = (a.bets || []).filter(b => b.type === 'TOTAL');
   if (tot.length) {
     const t = [...tot].sort((x, y) => y.ev - x.ev)[0];
-    const matchup = `${a.game.away} vs ${a.game.home}`;
+    const matchup = `${awayName} vs ${homeName}`;
     e.addFields({ name: '📊 Total Points recommendation', value: trim(
       `${t.ev >= MIN_EV ? '✅' : '➖'} **${t.label}** (${matchup}) — ${fmtAmerican(t.american)} @ ${t.book}\n` +
       `Hit rate ${probBar(t.p)} **${pct(t.p)}** (model ${pct(t.pModel)}, market ${pct(t.pMkt)})\n` +
@@ -95,34 +110,43 @@ function analyzeEmbed(a, props, meta) {
 
   for (const side of ['home', 'away']) {
     const t = a[side];
-    const items = t.injuries.items.filter(i => i.weight >= 0.25).slice(0, 4);
-    e.addFields({ name: `🩹 ${t.name} (rating ${t.rating.rating >= 0 ? '+' : ''}${t.rating.rating.toFixed(1)}, injuries −${t.injuries.penalty.toFixed(1)})`,
-      value: items.length ? trim(items.map(injLine).join('\n')) : 'No significant injuries listed', inline: true });
+    if (t) {
+      const items = (t.injuries?.items || []).filter(i => i.weight >= 0.25).slice(0, 4);
+      const rating = t.rating?.rating || 0;
+      const penalty = t.injuries?.penalty || 0;
+      e.addFields({ name: `🩹 ${t.name || (side === 'home' ? homeName : awayName)} (rating ${rating >= 0 ? '+' : ''}${rating.toFixed(1)}, injuries −${penalty.toFixed(1)})`,
+        value: items.length ? trim(items.map(injLine).join('\n')) : 'No significant injuries listed', inline: true });
+    }
   }
-  if (props.length) {
+
+  if (props && props.length) {
     e.addFields({ name: '🏀 Player props (top 3)', value: trim(props.slice(0, 3).map(p =>
       `**${p.label}** ${p.estimated ? '*(est. line)*' : `(${fmtAmerican(p.american)} @ ${p.book})`}\n` +
       `proj ${p.proj.toFixed(1)} ${STAT_ABBR[p.stat]} · hit ${probBar(p.p, 8)} ${pct(p.p, 0)} · EV ${evText(p.ev)}${p.questionable ? ' · ⚠️ injury listed' : ''}`).join('\n')) });
   }
-  const wx = a.home.weather || a.away.weather;
+
+  const wx = a.home?.weather || a.away?.weather;
   if (wx?.text) e.addFields({ name: '🌦️ Weather', value: `${wx.text}${wx.temp != null ? `, ${wx.temp}°F` : ''}`, inline: true });
-  if (a.h2hAdj) e.addFields({ name: '🤝 H2H nudge', value: `${a.h2hAdj >= 0 ? '+' : ''}${a.h2hAdj.toFixed(2)} ${unit} to ${a.game.home}`, inline: true });
+  if (a.h2hAdj) e.addFields({ name: '🤝 H2H nudge', value: `${a.h2hAdj >= 0 ? '+' : ''}${a.h2hAdj.toFixed(2)} ${unit} to ${homeName}`, inline: true });
   return e;
 }
 
-function bestBetsEmbed(label, bets, nGames, meta) {
-  const color = bets.length ? bets[0].tier.color : 0x95a5a6;
+function bestBetsEmbed(label, bets = [], nGames = 0, meta = {}) {
+  const color = (bets && bets.length && bets[0].tier) ? bets[0].tier.color : 0x95a5a6;
   const e = base(color).setTitle(`💰 Best bets: ${label}`);
   e.setDescription(banner(meta) + `Scanned **${nGames}** game(s). Conservative mode: single bets, p ≥ 50%, price ≤ +130, ranked by EV and win probability.`);
-  if (!bets.length) { e.addFields({ name: 'No +EV bets found', value: 'The market looks efficient against this model today. Passing is a valid play.' }); return e; }
-  bets.forEach((b, i) => e.addFields({ name: `${i + 1}. ${b.tier.emoji} ${b.label} (${fmtAmerican(b.american)} @ ${b.book})`, value: trim(
-    `${probBar(b.p)} **${pct(b.p)}** win/cover · EV **${evText(b.ev)}** · ${b.tier.label}\n` +
+  if (!bets || !bets.length) { 
+    e.addFields({ name: 'No +EV bets found', value: 'The market looks efficient against this model today. Passing is a valid play.' }); 
+    return e; 
+  }
+  bets.forEach((b, i) => e.addFields({ name: `${i + 1}. ${b.tier?.emoji || '🟢'} ${b.label} (${fmtAmerican(b.american)} @ ${b.book})`, value: trim(
+    `${probBar(b.p)} **${pct(b.p)}** win/cover · EV **${evText(b.ev)}** · ${b.tier?.label || 'HIGH'}\n` +
     `model ${pct(b.pModel)} · market ${pct(b.pMkt)} · ¼-Kelly ${pct(b.kelly, 2)}`) }));
   return e;
 }
 
 const NUM = ['1️⃣', '2️⃣', '3️⃣', '4️⃣', '5️⃣'];
-function lineupEmbed(label, parlays, legsN, mode, meta) {
+function lineupEmbed(label, parlays = {}, legsN = 2, mode = 'game', meta = {}) {
   const e = base(0x3498db).setTitle(`🎰 ${legsN}-Leg Parlay Engine (${label.toUpperCase()} — ${mode.toUpperCase()})`);
   let d = banner(meta);
 
@@ -136,7 +160,7 @@ function lineupEmbed(label, parlays, legsN, mode, meta) {
   if (parlays.strong) {
     const lu = parlays.strong;
     const per10 = (lu.dec - 1) * 10;
-    let desc = `**Combined Probability:** ${pct(lu.pInd, 2)}${Math.abs(lu.pAdj - lu.pInd) > 1e-6 ? ` (Correlated: **${pct(lu.pAdj, 2)}**)‰` : ''}\n` +
+    let desc = `**Combined Probability:** ${pct(lu.pInd, 2)}${Math.abs(lu.pAdj - lu.pInd) > 1e-6 ? ` (Correlated: **${pct(lu.pAdj, 2)}**)` : ''}\n` +
                `**Total Odds:** ${fmtAmerican(lu.american)} (${lu.dec.toFixed(2)}x) · $10 wins **$${per10.toFixed(2)}**\n` +
                `**Expected Value:** ${evText(lu.ev)} per $1\n\n**Legs:**\n` +
                lu.legs.map((l, i) => `${NUM[i]} **${l.label}** (${fmtAmerican(l.american)} @ ${l.book} — ${pct(l.p)} win rate)`).join('\n');
@@ -146,7 +170,7 @@ function lineupEmbed(label, parlays, legsN, mode, meta) {
   if (parlays.risky) {
     const lu = parlays.risky;
     const per10 = (lu.dec - 1) * 10;
-    let desc = `**Combined Probability:** ${pct(lu.pInd, 2)}${Math.abs(lu.pAdj - lu.pInd) > 1e-6 ? ` (Correlated: **${pct(lu.pAdj, 2)}**)‰` : ''}\n` +
+    let desc = `**Combined Probability:** ${pct(lu.pInd, 2)}${Math.abs(lu.pAdj - lu.pInd) > 1e-6 ? ` (Correlated: **${pct(lu.pAdj, 2)}**)` : ''}\n` +
                `**Total Odds:** ${fmtAmerican(lu.american)} (${lu.dec.toFixed(2)}x) · $10 wins **$${per10.toFixed(2)}**\n` +
                `**Expected Value:** ${evText(lu.ev)} per $1\n\n**Legs:**\n` +
                lu.legs.map((l, i) => `${NUM[i]} **${l.label}** (${fmtAmerican(l.american)} @ ${l.book} — ${pct(l.p)} win rate)`).join('\n');
