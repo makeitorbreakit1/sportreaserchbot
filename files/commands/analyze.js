@@ -2,16 +2,53 @@
 const { SlashCommandBuilder } = require('discord.js');
 const { startCooldown, HARD_LIMIT_MESSAGE } = require('../cache/cacheManager');
 const oddsService = require('../services/oddsService');
-const { analyzeGame, buildProps } = require('../services/analyticsEngine');
+const { analyzeGame, buildProps, normName, nameMatchScore } = require('../services/analyticsEngine');
 const { analyzeEmbed, errorEmbed, onCooldown, replyWithError } = require('./embeds');
 
 // Extract properties safely with fallback to prevent circular-import crashes at registration time
 const SPORTS = oddsService.SPORTS || {};
 const getSlate = oddsService.getSlate;
-const findGame = oddsService.findGame;
 const getAnalysisContext = oddsService.getAnalysisContext;
 const getH2HMargin = oddsService.getH2HMargin;
 const getLiveProps = oddsService.getLiveProps;
+
+// Robust team matching function to replace stub findGame
+function findGameHelper(games = [], teamA = '', teamB = '') {
+  if (!Array.isArray(games) || games.length === 0) return null;
+  const normA = normName(teamA);
+  const normB = normName(teamB);
+
+  let bestGame = null;
+  let highestScore = 0;
+
+  for (const g of games) {
+    const home = normName(g.home);
+    const away = normName(g.away);
+
+    // Check direct matchup matching
+    const scoreA = Math.max(nameMatchScore(normA, home), nameMatchScore(normA, away));
+    const scoreB = Math.max(nameMatchScore(normB, home), nameMatchScore(normB, away));
+    const totalScore = scoreA + scoreB;
+
+    if (totalScore > highestScore && scoreA >= 20 && scoreB >= 20) {
+      highestScore = totalScore;
+      bestGame = g;
+    }
+  }
+
+  // Fallback: match either single team if only one was matched strongly
+  if (!bestGame) {
+    for (const g of games) {
+      const home = normName(g.home);
+      const away = normName(g.away);
+      if (home.includes(normA) || away.includes(normA) || home.includes(normB) || away.includes(normB)) {
+        return g;
+      }
+    }
+  }
+
+  return bestGame;
+}
 
 // Safe dynamic resolution for SPORT_CHOICES
 const SPORT_CHOICES = Array.isArray(oddsService.SPORT_CHOICES) && oddsService.SPORT_CHOICES.length > 0
@@ -23,6 +60,8 @@ const SPORT_CHOICES = Array.isArray(oddsService.SPORT_CHOICES) && oddsService.SP
       { name: 'MLB', value: 'mlb' },
       { name: 'Premier League', value: 'epl' },
       { name: 'MLS', value: 'mls' },
+      { name: 'UEFA Champions League', value: 'uefa' },
+      { name: 'La Liga', value: 'laliga' },
     ];
 
 module.exports = {
@@ -44,7 +83,9 @@ module.exports = {
       const wantLive = interaction.options.getBoolean('live_props') === true;
 
       const slate = await getSlate(sport);
-      const game = findGame(slate.games, teamA, teamB);
+      const findGameFn = (oddsService.findGame && oddsService.findGame(slate.games, teamA, teamB)) ? oddsService.findGame : findGameHelper;
+      const game = findGameFn(slate.games, teamA, teamB);
+
       if (!game) {
         return void await interaction.editReply({ embeds: [errorEmbed('No matching game',
           `No ${SPORTS[sport]?.label || sport.toUpperCase()} game between **${teamA}** and **${teamB}** in the next ${SPORTS[sport]?.windowHours || 36}h odds window. ` +
