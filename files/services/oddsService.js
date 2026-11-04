@@ -46,18 +46,33 @@ async function getSlate(sport) {
       return { games: [], stale: false, blocked: false, missing: [] };
     }
 
-    // Map response games to internal format with safety fallbacks
+    // Diagnostic payload log to inspect raw API response structure in logs
+    if (rawGames[0]) {
+      console.log(`[ODDS_SERVICE DEBUG] First raw game payload for ${sport}:`, JSON.stringify(rawGames[0]));
+    }
+
+    // Map response games to internal format with comprehensive safety fallbacks
     const games = rawGames.map(g => {
-      const homeName = g.home_team || g.home || 'Home Team';
-      const awayName = g.away_team || g.away || 'Away Team';
-      
       const bookmaker = g.bookmakers?.[0];
       const h2hMarket = bookmaker?.markets?.find(m => m.key === 'h2h');
       const spreadMarket = bookmaker?.markets?.find(m => m.key === 'spreads');
       const totalMarket = bookmaker?.markets?.find(m => m.key === 'totals');
 
-      const homeOutcome = h2hMarket?.outcomes?.find(o => o.name === homeName);
-      const awayOutcome = h2hMarket?.outcomes?.find(o => o.name === awayName);
+      // Comprehensive multi-source resolution for home and away team names
+      const homeName = g.home_team || 
+                       g.home || 
+                       (g.teams && g.teams[0] ? g.teams[0] : null) || 
+                       (h2hMarket?.outcomes?.[0]?.name ? h2hMarket.outcomes[0].name : null) || 
+                       'Home Team';
+
+      const awayName = g.away_team || 
+                       g.away || 
+                       (g.teams && g.teams[1] ? g.teams[1] : null) || 
+                       (h2hMarket?.outcomes?.[1]?.name ? h2hMarket.outcomes[1].name : null) || 
+                       'Away Team';
+
+      const homeOutcome = h2hMarket?.outcomes?.find(o => o.name === homeName) || h2hMarket?.outcomes?.[0];
+      const awayOutcome = h2hMarket?.outcomes?.find(o => o.name === awayName) || h2hMarket?.outcomes?.[1];
 
       const homePrice = homeOutcome?.price;
       const awayPrice = awayOutcome?.price;
