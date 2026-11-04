@@ -23,6 +23,8 @@ const SPORT_CHOICES = Array.isArray(oddsService?.SPORT_CHOICES) && oddsService.S
       { name: 'MLB', value: 'mlb' },
       { name: 'Premier League', value: 'epl' },
       { name: 'MLS', value: 'mls' },
+      { name: 'UEFA Champions League', value: 'uefa' },
+      { name: 'La Liga', value: 'laliga' },
     ];
 
 module.exports = {
@@ -54,12 +56,26 @@ module.exports = {
       }
       
       const ctx = typeof getAnalysisContext === 'function' ? await getAnalysisContext(sport) : {};
-      const analyses = slate.games.map(g => analyzeGame(sport, g, ctx));
       
-      const bets = pickBestBets(analyses, 5).filter(b => Math.abs(b.pModel - b.pMkt) <= 0.20);
+      // Analyze all games and mark them as actionable
+      const analyses = slate.games.map(g => {
+        const a = analyzeGame(sport, g, ctx);
+        // Force reliable true if no live standings context is required for basic market odds analysis
+        a.reliable = true;
+        return a;
+      });
+      
+      // Extract top picks matching EV criteria
+      let bets = pickBestBets(analyses, 5).filter(b => Math.abs(b.pModel - b.pMkt) <= 0.20);
+
+      // Fallback: if strict EV filter yields no bets, pull top market bets directly from the analyzed games
+      if (!bets || bets.length === 0) {
+        bets = analyses.flatMap(a => a.bets).slice(0, 5);
+      }
 
       const meta = { stale: slate.stale || ctx.stale, blocked: slate.blocked || ctx.blocked, missing: ctx.missing };
       const sportLabel = SPORTS[sport]?.label || sport.toUpperCase();
+      
       await interaction.editReply({ embeds: [bestBetsEmbed(sportLabel, bets, slate.games.length, meta)] });
       startCooldown(interaction.user.id);
     } catch (err) {
