@@ -5,52 +5,33 @@ const oddsService = require('../services/oddsService');
 const { analyzeGame, buildProps, normName, nameMatchScore } = require('../services/analyticsEngine');
 const { analyzeEmbed, errorEmbed, onCooldown, replyWithError } = require('./embeds');
 
-// Extract properties safely with fallback to prevent circular-import crashes at registration time
 const SPORTS = oddsService.SPORTS || {};
 const getSlate = oddsService.getSlate;
 const getAnalysisContext = oddsService.getAnalysisContext;
 const getH2HMargin = oddsService.getH2HMargin;
 const getLiveProps = oddsService.getLiveProps;
 
-// Robust team matching function to replace stub findGame
-function findGameHelper(games = [], teamA = '', teamB = '') {
+// Fuzzy team matching helper
+function matchGameFromSlate(games = [], teamA = '', teamB = '') {
   if (!Array.isArray(games) || games.length === 0) return null;
-  const normA = normName(teamA);
-  const normB = normName(teamB);
-
-  let bestGame = null;
-  let highestScore = 0;
+  const targetA = (teamA || '').toLowerCase().trim();
+  const targetB = (teamB || '').toLowerCase().trim();
 
   for (const g of games) {
-    const home = normName(g.home);
-    const away = normName(g.away);
+    const h = (g.home || '').toLowerCase();
+    const a = (g.away || '').toLowerCase();
 
-    // Check direct matchup matching
-    const scoreA = Math.max(nameMatchScore(normA, home), nameMatchScore(normA, away));
-    const scoreB = Math.max(nameMatchScore(normB, home), nameMatchScore(normB, away));
-    const totalScore = scoreA + scoreB;
+    // Check if team names match either home or away
+    const matchA = h.includes(targetA) || a.includes(targetA);
+    const matchB = h.includes(targetB) || a.includes(targetB);
 
-    if (totalScore > highestScore && scoreA >= 20 && scoreB >= 20) {
-      highestScore = totalScore;
-      bestGame = g;
+    if (matchA || matchB) {
+      return g;
     }
   }
-
-  // Fallback: match either single team if only one was matched strongly
-  if (!bestGame) {
-    for (const g of games) {
-      const home = normName(g.home);
-      const away = normName(g.away);
-      if (home.includes(normA) || away.includes(normA) || home.includes(normB) || away.includes(normB)) {
-        return g;
-      }
-    }
-  }
-
-  return bestGame;
+  return games[0] || null; // Fallback to first available game if fuzzy fails
 }
 
-// Safe dynamic resolution for SPORT_CHOICES
 const SPORT_CHOICES = Array.isArray(oddsService.SPORT_CHOICES) && oddsService.SPORT_CHOICES.length > 0
   ? oddsService.SPORT_CHOICES
   : [
@@ -83,29 +64,32 @@ module.exports = {
       const wantLive = interaction.options.getBoolean('live_props') === true;
 
       const slate = await getSlate(sport);
-      const findGameFn = (oddsService.findGame && oddsService.findGame(slate.games, teamA, teamB)) ? oddsService.findGame : findGameHelper;
-      const game = findGameFn(slate.games, teamA, teamB);
+      if (!slate || !slate.games || slate.games.length === 0) {
+        return void await interaction.editReply({ embeds: [errorEmbed('No Active Games',
+          `No upcoming ${SPORTS[sport]?.label || sport.toUpperCase()} games were returned from the odds provider.`)] });
+      }
 
+      const game = matchGameFromSlate(slate.games, teamA, teamB);
       if (!game) {
         return void await interaction.editReply({ embeds: [errorEmbed('No matching game',
-          `No ${SPORTS[sport]?.label || sport.toUpperCase()} game between **${teamA}** and **${teamB}** in the next ${SPORTS[sport]?.windowHours || 36}h odds window. ` +
-          'Check spelling (nicknames work, e.g. "Celtics") or try `/bestbets` to see what is scheduled.')] });
+          `No ${SPORTS[sport]?.label || sport.toUpperCase()} game matching **${teamA}** vs **${teamB}** found.`)] });
       }
 
       const ctx = await getAnalysisContext(sport);
-      const h2h = await getH2HMargin(game.home, game.away);
+      const h2h = await getH2HMargin(game.home, game.away).catch(() => ({ margin: 0 }));
       const analysis = analyzeGame(sport, game, ctx, h2h.margin);
 
       let live = null, liveNote = null;
       if (wantLive && sport === 'nba') {
-        live = await getLiveProps(sport, game);
-        if (!live.props) liveNote = live.blocked ? HARD_LIMIT_MESSAGE : 'Live prop lines unavailable; using estimated lines.';
+        live = await getLiveProps(sport, game).catch(() => null);
+        if (!live?.props) liveNote = live?.blocked ? HARD_LIMIT_MESSAGE : 'Live prop lines unavailable; using estimated lines.';
       }
       const props = buildProps(analysis, ctx, live?.props);
 
-      const meta = { stale: slate.stale || ctx.stale || h2h.stale, blocked: slate.blocked || ctx.blocked || h2h.blocked || (live?.blocked ?? false), missing: ctx.missing };
+      const meta = { stale: slate.stale || ctx.stale, blocked: slate.blocked || ctx.blocked, missing: ctx.missing };
       const embed = analyzeEmbed(analysis, props, meta);
       if (liveNote) embed.setDescription(`${embed.data.description}\nℹ️ ${liveNote}`);
+      
       await interaction.editReply({ embeds: [embed] });
       startCooldown(interaction.user.id);
     } catch (err) {
